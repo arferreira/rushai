@@ -42,12 +42,14 @@ fn catalog() -> &'static Catalog {
 /// Resolve a model (or one of its aliases) within a provider.
 /// The returned ModelInfo carries the canonical model id.
 pub fn lookup(provider: &str, model: &str) -> Option<ModelInfo> {
-    let entry = catalog().providers.get(provider)?;
+    let provider = provider.to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
+    let entry = catalog().providers.get(&provider)?;
     let id = entry
         .aliases
-        .get(model)
+        .get(&model)
         .map(String::as_str)
-        .unwrap_or(model);
+        .unwrap_or(&model);
     let m = entry.models.get(id)?;
     Some(ModelInfo {
         id: id.to_owned(),
@@ -85,6 +87,26 @@ mod tests {
     fn unknown_models_and_providers_are_none() {
         assert!(lookup("anthropic", "claude-2").is_none());
         assert!(lookup("mistral", "large").is_none());
+    }
+
+    #[test]
+    fn lookup_is_case_insensitive() {
+        assert_eq!(lookup("Anthropic", "Sonnet").unwrap().id, "claude-sonnet-5");
+    }
+
+    #[test]
+    fn every_alias_points_at_a_real_model() {
+        let raw: serde_json::Value = serde_json::from_str(include_str!("catalog.json")).unwrap();
+        for (provider, entry) in raw["providers"].as_object().unwrap() {
+            let models = entry["models"].as_object().unwrap();
+            for (alias, target) in entry["aliases"].as_object().unwrap() {
+                let target = target.as_str().unwrap();
+                assert!(
+                    models.contains_key(target),
+                    "{provider} alias {alias} points at missing model {target}"
+                );
+            }
+        }
     }
 
     #[test]

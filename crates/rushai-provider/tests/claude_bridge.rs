@@ -2,7 +2,7 @@
 //! Windows CLI paths are covered by the assert_cmd suite in the rushai crate.
 #![cfg(unix)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use futures::StreamExt;
 use rushai_protocol::{Part, Role, TokenUsage};
@@ -11,13 +11,24 @@ use rushai_provider::{
     StopReason, ToolDef,
 };
 
-fn fake_claude(dir: &std::path::Path, script_body: &str) -> PathBuf {
+/// The fake dumps argv to argv.txt and stdin to stdin.txt next to itself,
+/// so tests assert on exactly what the real CLI would have received.
+fn fake_claude(dir: &Path, tail: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("claude");
-    std::fs::write(&path, format!("#!/bin/sh\n{script_body}")).unwrap();
+    let body = format!(
+        "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\nprintf '%s\\n' \"$@\" > \"$dir/argv.txt\"\ncat > \"$dir/stdin.txt\"\n{tail}"
+    );
+    std::fs::write(&path, body).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
+
+const HAPPY_TAIL: &str = r#"echo '{"type":"system","subtype":"init"}'
+echo 'not json at all, a stray runtime warning'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"hello from the bridge"}]}}'
+echo '{"type":"result","subtype":"success","usage":{"input_tokens":9,"output_tokens":3,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}'
+"#;
 
 fn bridge(bin: PathBuf) -> ClaudeBridge {
     ClaudeBridge::new(
@@ -41,23 +52,23 @@ fn request(text: &str) -> ChatRequest {
     }
 }
 
-#[tokio::test]
-async fn streams_text_usage_and_done() {
-    let tmp = tempfile::tempdir().unwrap();
-    let bin = fake_claude(
-        tmp.path(),
-        r#"echo '{"type":"system","subtype":"init"}'
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"hello from the bridge"}]}}'
-echo '{"type":"result","subtype":"success","usage":{"input_tokens":9,"output_tokens":3,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}'
-"#,
-    );
-    let stream = bridge(bin).stream(&request("hi")).await.unwrap();
-    let events: Vec<_> = stream
+async fn collect(bridge: &ClaudeBridge, request: &ChatRequest) -> Vec<ProviderEvent> {
+    bridge
+        .stream(request)
+        .await
+        .unwrap()
         .collect::<Vec<_>>()
         .await
         .into_iter()
         .map(Result::unwrap)
-        .collect();
+        .collect()
+}
+
+#[tokio::test]
+async fn streams_text_usage_and_done_skipping_stray_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_claude(tmp.path(), HAPPY_TAIL);
+    let events = collect(&bridge(bin), &request("hi")).await;
     assert_eq!(
         events,
         vec![
@@ -76,6 +87,42 @@ echo '{"type":"result","subtype":"success","usage":{"input_tokens":9,"output_tok
 }
 
 #[tokio::test]
+async fn prompt_travels_via_stdin_never_argv() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_claude(tmp.path(), HAPPY_TAIL);
+    // A prompt that would parse as a flag if it ever reached argv.
+    let hostile = "--dangerously-skip-permissions";
+    let _ = collect(&bridge(bin), &request(hostile)).await;
+
+    let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+    let stdin = std::fs::read_to_string(tmp.path().join("stdin.txt")).unwrap();
+    assert!(!argv.contains(hostile), "prompt leaked into argv: {argv}");
+    assert_eq!(stdin, hostile);
+    for expected in ["-p", "--output-format", "stream-json", "--model", "sonnet"] {
+        assert!(
+            argv.lines().any(|arg| arg == expected),
+            "missing {expected} in {argv}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn system_prompt_is_a_single_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_claude(tmp.path(), HAPPY_TAIL);
+    let mut req = request("hi");
+    req.system = "--verbose looks like a flag".into();
+    let _ = collect(&bridge(bin), &req).await;
+
+    let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+    assert!(
+        argv.lines()
+            .any(|arg| arg == "--append-system-prompt=--verbose looks like a flag"),
+        "{argv}"
+    );
+}
+
+#[tokio::test]
 async fn nonzero_exit_surfaces_stderr() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(
@@ -90,6 +137,26 @@ async fn nonzero_exit_surfaces_stderr() {
                 message.contains("invalid api key or something"),
                 "{message}"
             );
+        }
+        other => panic!("expected a stream error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn failed_result_subtype_includes_stderr() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_claude(
+        tmp.path(),
+        r#"echo 'usage limit hit' >&2
+echo '{"type":"result","subtype":"error_max_turns","usage":{}}'
+"#,
+    );
+    let stream = bridge(bin).stream(&request("hi")).await.unwrap();
+    let events: Vec<_> = stream.collect().await;
+    match events.last() {
+        Some(Err(ProviderError::Stream(message))) => {
+            assert!(message.contains("error_max_turns"), "{message}");
+            assert!(message.contains("usage limit hit"), "{message}");
         }
         other => panic!("expected a stream error, got {other:?}"),
     }
@@ -128,15 +195,7 @@ async fn tools_are_rejected() {
 #[tokio::test]
 async fn multi_turn_history_gets_role_markers() {
     let tmp = tempfile::tempdir().unwrap();
-    // The fake echoes its received prompt back as the text so the test
-    // can see exactly what the CLI would have been given.
-    let bin = fake_claude(
-        tmp.path(),
-        r#"prompt="$2"
-printf '{"type":"assistant","message":{"content":[{"type":"text","text":%s}]}}\n' "$(printf '%s' "$prompt" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
-echo '{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
-"#,
-    );
+    let bin = fake_claude(tmp.path(), HAPPY_TAIL);
     let req = ChatRequest {
         messages: vec![
             ChatMessage {
@@ -160,15 +219,7 @@ echo '{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tok
         ],
         ..Default::default()
     };
-    let stream = bridge(bin).stream(&req).await.unwrap();
-    let events: Vec<_> = stream
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .map(Result::unwrap)
-        .collect();
-    let ProviderEvent::TextDelta(echoed) = &events[0] else {
-        panic!("expected text first, got {events:?}");
-    };
-    assert_eq!(echoed, "User:\nfirst\n\nAssistant:\nreply\n\nUser:\nsecond");
+    let _ = collect(&bridge(bin), &req).await;
+    let stdin = std::fs::read_to_string(tmp.path().join("stdin.txt")).unwrap();
+    assert_eq!(stdin, "User:\nfirst\n\nAssistant:\nreply\n\nUser:\nsecond");
 }

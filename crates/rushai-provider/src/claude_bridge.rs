@@ -10,7 +10,7 @@ use std::process::Stdio;
 use async_stream::try_stream;
 use rushai_protocol::{Part, Role, TokenUsage};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::{
@@ -28,16 +28,20 @@ impl ClaudeBridge {
     }
 
     /// `CLAUDE_BIN` override, else `claude` on PATH.
-    pub fn discover(model: ModelInfo) -> Result<Self, ProviderError> {
+    pub fn discover(model: ModelInfo) -> Self {
         let bin = match std::env::var("CLAUDE_BIN") {
             Ok(bin) if !bin.is_empty() => PathBuf::from(bin),
             _ => PathBuf::from("claude"),
         };
-        Ok(Self::new(bin, model))
+        Self::new(bin, model)
     }
 
-    /// The CLI takes one prompt string, so prior turns are serialized
-    /// with role markers. Lossy for tool parts; fine for chat.
+    /// The CLI takes one prompt string, so prior turns are serialized with
+    /// `User:` / `Assistant:` role markers. Known limitations: a message
+    /// body containing `\n\nAssistant:\n` can forge a turn boundary, and a
+    /// turn whose parts are all non-text (tool calls, files) serializes to
+    /// nothing. Both are inherent to flattening history into one prompt;
+    /// the bridge is chat-only, so real tool traffic never reaches it.
     fn prompt(request: &ChatRequest) -> String {
         let mut turns: Vec<(Role, String)> = Vec::new();
         for message in &request.messages {
@@ -82,17 +86,20 @@ impl Provider for ClaudeBridge {
         }
 
         let mut command = Command::new(&self.bin);
+        // The prompt goes through stdin, never argv: argv would let a
+        // prompt starting with "-" parse as CLI flags, and caps out at
+        // ARG_MAX long before a real transcript does. `=` keeps the
+        // system prompt a single unambiguous token.
         command
             .arg("-p")
-            .arg(Self::prompt(request))
             .args(["--output-format", "stream-json", "--verbose"])
             .args(["--model", &self.model.id])
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         if !request.system.is_empty() {
-            command.arg("--append-system-prompt").arg(&request.system);
+            command.arg(format!("--append-system-prompt={}", request.system));
         }
 
         let mut child = command.spawn().map_err(|err| {
@@ -106,11 +113,18 @@ impl Provider for ClaudeBridge {
             }
         })?;
 
+        let mut stdin = child.stdin.take().expect("stdin piped");
+        let prompt = Self::prompt(request);
+        tokio::spawn(async move {
+            let _ = stdin.write_all(prompt.as_bytes()).await;
+            // Dropping stdin closes the pipe so the CLI sees EOF.
+        });
+
         let stdout = child.stdout.take().expect("stdout piped");
         let mut stderr = child.stderr.take().expect("stderr piped");
         // Drain stderr concurrently so a chatty CLI can't fill the pipe
         // and deadlock the child.
-        let stderr_task = tokio::spawn(async move {
+        let mut stderr_task = tokio::spawn(async move {
             let mut buf = Vec::new();
             let _ = stderr.read_to_end(&mut buf).await;
             String::from_utf8_lossy(&buf).into_owned()
@@ -119,6 +133,7 @@ impl Provider for ClaudeBridge {
         let stream = try_stream! {
             let mut lines = BufReader::new(stdout).lines();
             let mut finished = false;
+            let mut failure: Option<String> = None;
             while let Some(line) = lines
                 .next_line()
                 .await
@@ -127,8 +142,11 @@ impl Provider for ClaudeBridge {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let event: Value = serde_json::from_str(&line)
-                    .map_err(|e| ProviderError::Protocol(format!("bad stream-json line: {e}")))?;
+                let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                    // Runtimes love printing warnings around the JSON.
+                    tracing::warn!(line, "skipping unparseable claude CLI output");
+                    continue;
+                };
                 match event["type"].as_str().unwrap_or_default() {
                     "assistant" => {
                         if let Some(blocks) = event["message"]["content"].as_array() {
@@ -155,34 +173,52 @@ impl Provider for ClaudeBridge {
                         });
                         if event["subtype"] == "success" {
                             finished = true;
-                            yield ProviderEvent::Done { stop: StopReason::EndTurn };
                         } else {
-                            let detail = event["subtype"].as_str().unwrap_or("unknown").to_owned();
-                            Err(ProviderError::Stream(format!("claude CLI result: {detail}")))?;
+                            let subtype =
+                                event["subtype"].as_str().unwrap_or("unknown").to_owned();
+                            failure = Some(format!("claude CLI result: {subtype}"));
                         }
+                        break;
                     }
                     _ => {}
                 }
             }
+
+            // Reap the child and collect stderr before reporting anything,
+            // success included, so no path leaves a zombie or loses the
+            // diagnostic.
             let status = child
                 .wait()
                 .await
                 .map_err(|e| ProviderError::Stream(e.to_string()))?;
+            let stderr = (&mut stderr_task).await.unwrap_or_default();
+            if let Some(message) = failure {
+                Err(ProviderError::Stream(with_stderr(message, &stderr)))?;
+            }
             if !status.success() {
-                let stderr = stderr_task.await.unwrap_or_default();
-                let tail: String = stderr.chars().rev().take(500).collect::<Vec<_>>()
-                    .into_iter().rev().collect();
-                Err(ProviderError::Stream(format!(
-                    "claude CLI exited with {status}: {}",
-                    tail.trim()
+                Err(ProviderError::Stream(with_stderr(
+                    format!("claude CLI exited with {status}"),
+                    &stderr,
                 )))?;
             }
             if !finished {
-                Err(ProviderError::Stream(
+                Err(ProviderError::Stream(with_stderr(
                     "claude CLI stream ended without a result event".into(),
-                ))?;
+                    &stderr,
+                )))?;
             }
+            yield ProviderEvent::Done { stop: StopReason::EndTurn };
         };
         Ok(Box::pin(stream))
     }
+}
+
+fn with_stderr(message: String, stderr: &str) -> String {
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        return message;
+    }
+    let skip = stderr.chars().count().saturating_sub(500);
+    let tail: String = stderr.chars().skip(skip).collect();
+    format!("{message}: {tail}")
 }

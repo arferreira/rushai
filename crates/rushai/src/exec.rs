@@ -13,6 +13,9 @@ use rushai_provider::{
 };
 
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5";
+/// Request default, deliberately independent of a model's max_output:
+/// catalog models allow 128k, which is not a sane default spend.
+const DEFAULT_MAX_TOKENS: u64 = 8192;
 
 pub async fn run(
     prompt: String,
@@ -25,6 +28,7 @@ pub async fn run(
             role: Role::User,
             parts: vec![Part::Text { text: prompt }],
         }],
+        max_tokens: Some(DEFAULT_MAX_TOKENS),
         ..Default::default()
     };
 
@@ -125,8 +129,8 @@ fn build_provider(
             ))))
         }
         "claude" => {
-            let model = info(model_id);
-            Ok(Box::new(ClaudeBridge::discover(model)?))
+            let model = model_info(provider_id, model_id);
+            Ok(Box::new(ClaudeBridge::discover(model)))
         }
         "copilot" => {
             let store = AuthStore::new(crate::paths::data_dir()?.join("auth.json"));
