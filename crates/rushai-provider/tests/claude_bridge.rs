@@ -11,6 +11,10 @@ use rushai_provider::{
     StopReason, ToolDef,
 };
 
+// Forking while another test holds the just-written script fd open makes
+// exec fail with ETXTBSY on Linux. Serializing the tests removes the race.
+static SPAWN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The fake dumps argv to argv.txt and stdin to stdin.txt next to itself,
 /// so tests assert on exactly what the real CLI would have received.
 fn fake_claude(dir: &Path, tail: &str) -> PathBuf {
@@ -66,6 +70,7 @@ async fn collect(bridge: &ClaudeBridge, request: &ChatRequest) -> Vec<ProviderEv
 
 #[tokio::test]
 async fn streams_text_usage_and_done_skipping_stray_output() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(tmp.path(), HAPPY_TAIL);
     let events = collect(&bridge(bin), &request("hi")).await;
@@ -88,6 +93,7 @@ async fn streams_text_usage_and_done_skipping_stray_output() {
 
 #[tokio::test]
 async fn prompt_travels_via_stdin_never_argv() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(tmp.path(), HAPPY_TAIL);
     // A prompt that would parse as a flag if it ever reached argv.
@@ -108,6 +114,7 @@ async fn prompt_travels_via_stdin_never_argv() {
 
 #[tokio::test]
 async fn system_prompt_is_a_single_token() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(tmp.path(), HAPPY_TAIL);
     let mut req = request("hi");
@@ -124,6 +131,7 @@ async fn system_prompt_is_a_single_token() {
 
 #[tokio::test]
 async fn nonzero_exit_surfaces_stderr() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(
         tmp.path(),
@@ -144,6 +152,7 @@ async fn nonzero_exit_surfaces_stderr() {
 
 #[tokio::test]
 async fn failed_result_subtype_includes_stderr() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(
         tmp.path(),
@@ -164,6 +173,7 @@ echo '{"type":"result","subtype":"error_max_turns","usage":{}}'
 
 #[tokio::test]
 async fn missing_binary_says_how_to_fix_it() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let err = match bridge(PathBuf::from("/nonexistent/claude"))
         .stream(&request("hi"))
         .await
@@ -177,6 +187,7 @@ async fn missing_binary_says_how_to_fix_it() {
 
 #[tokio::test]
 async fn tools_are_rejected() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(tmp.path(), "exit 0\n");
     let mut req = request("hi");
@@ -194,6 +205,7 @@ async fn tools_are_rejected() {
 
 #[tokio::test]
 async fn multi_turn_history_gets_role_markers() {
+    let _spawn_guard = SPAWN_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let bin = fake_claude(tmp.path(), HAPPY_TAIL);
     let req = ChatRequest {
