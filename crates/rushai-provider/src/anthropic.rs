@@ -142,10 +142,12 @@ impl Provider for Anthropic {
 
         let status = response.status();
         if !status.is_success() {
+            let retry_after = crate::retry::parse_retry_after(response.headers());
             let message = response.text().await.unwrap_or_default();
             return Err(ProviderError::Api {
                 status: status.as_u16(),
                 message,
+                retry_after,
             });
         }
 
@@ -227,7 +229,11 @@ impl Provider for Anthropic {
                     "error" => {
                         let message =
                             data["error"]["message"].as_str().unwrap_or_default().to_owned();
-                        Err(ProviderError::Api { status: 0, message })?;
+                        Err(ProviderError::Api {
+                            status: 0,
+                            message,
+                            retry_after: None,
+                        })?;
                     }
                     _ => {}
                 }

@@ -5,8 +5,10 @@
 //! reasoning signatures, endpoint routing) stay inside the impl.
 
 mod anthropic;
+pub mod copilot;
 pub mod fake;
 mod openai_compat;
+mod retry;
 
 use std::pin::Pin;
 
@@ -16,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use anthropic::Anthropic;
+pub use copilot::{Copilot, CopilotAuth, DeviceCode};
 pub use openai_compat::OpenAiCompat;
+pub use retry::Retrying;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelInfo {
@@ -88,7 +92,12 @@ pub enum ProviderError {
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("api error {status}: {message}")]
-    Api { status: u16, message: String },
+    Api {
+        status: u16,
+        message: String,
+        /// Parsed from a Retry-After header when the server sent one.
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("stream error: {0}")]
     Stream(String),
     #[error("unexpected provider event: {0}")]

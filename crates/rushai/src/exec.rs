@@ -3,11 +3,13 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 use futures::StreamExt;
+use rushai_config::AuthStore;
 use rushai_config::Config;
 use rushai_protocol::{Part, Role, TokenUsage};
 use rushai_provider::fake::{FakeProvider, Scripted};
 use rushai_provider::{
-    Anthropic, ChatMessage, ChatRequest, ModelInfo, OpenAiCompat, Provider, ProviderEvent,
+    Anthropic, ChatMessage, ChatRequest, Copilot, ModelInfo, OpenAiCompat, Provider, ProviderEvent,
+    Retrying,
 };
 
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5";
@@ -84,7 +86,10 @@ fn build_provider(
                 .context(
                     "no anthropic api key: set providers.anthropic.api_key or ANTHROPIC_API_KEY",
                 )?;
-            Ok(Box::new(Anthropic::new(api_key, info(model_id))))
+            Ok(Box::new(Retrying::new(Anthropic::new(
+                api_key,
+                info(model_id),
+            ))))
         }
         "openai" | "openrouter" => {
             let env_key = if provider_id == "openai" {
@@ -108,22 +113,33 @@ fn build_provider(
                         "openai" => "https://api.openai.com/v1".into(),
                         _ => "https://openrouter.ai/api/v1".into(),
                     });
-            Ok(Box::new(OpenAiCompat::new(
+            Ok(Box::new(Retrying::new(OpenAiCompat::new(
                 api_key,
                 info(model_id),
                 base_url,
-            )))
+            ))))
+        }
+        "copilot" => {
+            let store = AuthStore::new(crate::paths::data_dir()?.join("auth.json"));
+            let entry = store
+                .load()?
+                .copilot
+                .context("copilot is not signed in: run rush login copilot")?;
+            Ok(Box::new(Retrying::new(Copilot::new(
+                entry.github_token,
+                info(model_id),
+            ))))
         }
         // Any configured provider with a base_url speaks the compat protocol.
         other => match config.providers.get(other) {
             Some(entry) if entry.base_url.is_some() => {
                 let api_key = entry.api_key.clone().unwrap_or_default();
                 let base_url = entry.base_url.clone().unwrap();
-                Ok(Box::new(OpenAiCompat::new(
+                Ok(Box::new(Retrying::new(OpenAiCompat::new(
                     api_key,
                     info(model_id),
                     base_url,
-                )))
+                ))))
             }
             _ => bail!(
                 "unknown provider {other:?} (built in: anthropic, openai, openrouter; \

@@ -28,45 +28,45 @@ impl OpenAiCompat {
             model,
         }
     }
+}
 
-    fn body(&self, request: &ChatRequest) -> Value {
-        let mut messages: Vec<Value> = Vec::new();
-        if !request.system.is_empty() {
-            messages.push(json!({ "role": "system", "content": request.system }));
-        }
-        for message in &request.messages {
-            append_message(&mut messages, message.role, &message.parts);
-        }
-
-        let mut body = json!({
-            "model": self.model.id,
-            "stream": true,
-            "stream_options": { "include_usage": true },
-            "messages": messages,
-        });
-        if let Some(max) = request.max_tokens {
-            body["max_completion_tokens"] = json!(max);
-        }
-        if !request.tools.is_empty() {
-            body["tools"] = Value::Array(
-                request
-                    .tools
-                    .iter()
-                    .map(|tool| {
-                        json!({
-                            "type": "function",
-                            "function": {
-                                "name": tool.name,
-                                "description": tool.description,
-                                "parameters": tool.input_schema,
-                            },
-                        })
-                    })
-                    .collect(),
-            );
-        }
-        body
+pub(crate) fn chat_body(model: &ModelInfo, request: &ChatRequest) -> Value {
+    let mut messages: Vec<Value> = Vec::new();
+    if !request.system.is_empty() {
+        messages.push(json!({ "role": "system", "content": request.system }));
     }
+    for message in &request.messages {
+        append_message(&mut messages, message.role, &message.parts);
+    }
+
+    let mut body = json!({
+        "model": model.id,
+        "stream": true,
+        "stream_options": { "include_usage": true },
+        "messages": messages,
+    });
+    if let Some(max) = request.max_tokens {
+        body["max_completion_tokens"] = json!(max);
+    }
+    if !request.tools.is_empty() {
+        body["tools"] = Value::Array(
+            request
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.input_schema,
+                        },
+                    })
+                })
+                .collect(),
+        );
+    }
+    body
 }
 
 /// One parts-based message can fan out: tool results become their own
@@ -122,19 +122,31 @@ impl Provider for OpenAiCompat {
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
-            .json(&self.body(&request))
+            .json(&chat_body(&self.model, &request))
             .send()
             .await?;
+        Ok(chat_event_stream(check_status(response).await?))
+    }
+}
 
-        let status = response.status();
-        if !status.is_success() {
-            let message = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Api {
-                status: status.as_u16(),
-                message,
-            });
-        }
+pub(crate) async fn check_status(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, ProviderError> {
+    let status = response.status();
+    if !status.is_success() {
+        let retry_after = crate::retry::parse_retry_after(response.headers());
+        let message = response.text().await.unwrap_or_default();
+        return Err(ProviderError::Api {
+            status: status.as_u16(),
+            message,
+            retry_after,
+        });
+    }
+    Ok(response)
+}
 
+pub(crate) fn chat_event_stream(response: reqwest::Response) -> EventStream {
+    {
         let mut sse = response.bytes_stream().eventsource();
         let stream = try_stream! {
             // Tool call deltas arrive keyed by index; ids only on the first.
@@ -150,7 +162,11 @@ impl Provider for OpenAiCompat {
                     .map_err(|e| ProviderError::Protocol(format!("bad chunk json: {e}")))?;
                 if let Some(error) = data.get("error") {
                     let message = error["message"].as_str().unwrap_or_default().to_owned();
-                    Err(ProviderError::Api { status: 0, message })?;
+                    Err(ProviderError::Api {
+                        status: 0,
+                        message,
+                        retry_after: None,
+                    })?;
                 }
                 if let Some(usage) = data.get("usage").filter(|u| !u.is_null()) {
                     yield ProviderEvent::Usage(TokenUsage {
@@ -212,6 +228,6 @@ impl Provider for OpenAiCompat {
                 }
             }
         };
-        Ok(Box::pin(stream))
+        Box::pin(stream)
     }
 }
