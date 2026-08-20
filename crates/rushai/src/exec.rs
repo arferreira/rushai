@@ -6,7 +6,9 @@ use futures::StreamExt;
 use rushai_config::Config;
 use rushai_protocol::{Part, Role, TokenUsage};
 use rushai_provider::fake::{FakeProvider, Scripted};
-use rushai_provider::{Anthropic, ChatMessage, ChatRequest, ModelInfo, Provider, ProviderEvent};
+use rushai_provider::{
+    Anthropic, ChatMessage, ChatRequest, ModelInfo, OpenAiCompat, Provider, ProviderEvent,
+};
 
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5";
 
@@ -82,15 +84,59 @@ fn build_provider(
                 .context(
                     "no anthropic api key: set providers.anthropic.api_key or ANTHROPIC_API_KEY",
                 )?;
-            Ok(Box::new(Anthropic::new(
+            Ok(Box::new(Anthropic::new(api_key, info(model_id))))
+        }
+        "openai" | "openrouter" => {
+            let env_key = if provider_id == "openai" {
+                "OPENAI_API_KEY"
+            } else {
+                "OPENROUTER_API_KEY"
+            };
+            let entry = config.providers.get(provider_id);
+            let api_key = entry
+                .and_then(|p| p.api_key.clone())
+                .or_else(|| std::env::var(env_key).ok())
+                .with_context(|| {
+                    format!(
+                        "no {provider_id} api key: set providers.{provider_id}.api_key or {env_key}"
+                    )
+                })?;
+            let base_url =
+                entry
+                    .and_then(|p| p.base_url.clone())
+                    .unwrap_or_else(|| match provider_id {
+                        "openai" => "https://api.openai.com/v1".into(),
+                        _ => "https://openrouter.ai/api/v1".into(),
+                    });
+            Ok(Box::new(OpenAiCompat::new(
                 api_key,
-                ModelInfo {
-                    id: model_id.into(),
-                    context_window: 200_000,
-                    max_output: 8192,
-                },
+                info(model_id),
+                base_url,
             )))
         }
-        other => bail!("unknown provider {other:?} (supported: anthropic)"),
+        // Any configured provider with a base_url speaks the compat protocol.
+        other => match config.providers.get(other) {
+            Some(entry) if entry.base_url.is_some() => {
+                let api_key = entry.api_key.clone().unwrap_or_default();
+                let base_url = entry.base_url.clone().unwrap();
+                Ok(Box::new(OpenAiCompat::new(
+                    api_key,
+                    info(model_id),
+                    base_url,
+                )))
+            }
+            _ => bail!(
+                "unknown provider {other:?} (built in: anthropic, openai, openrouter; \
+                 or configure providers.{other}.base_url for an openai-compatible endpoint)"
+            ),
+        },
+    }
+}
+
+fn info(model_id: &str) -> ModelInfo {
+    ModelInfo {
+        id: model_id.into(),
+        context_window: 200_000,
+        max_output: 8192,
     }
 }

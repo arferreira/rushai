@@ -6,6 +6,7 @@
 
 mod anthropic;
 pub mod fake;
+mod openai_compat;
 
 use std::pin::Pin;
 
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use anthropic::Anthropic;
+pub use openai_compat::OpenAiCompat;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelInfo {
