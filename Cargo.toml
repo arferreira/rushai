@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rushai-config", "crates/rushai-protocol"]
+members = ["crates/rushai-config", "crates/rushai-core", "crates/rushai-protocol"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,10 +11,13 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 dotenvy = "0.15"
+rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite_migration = "2"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
 tempfile = "3"
 thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
 uuid = { version = "1", features = ["v7"] }

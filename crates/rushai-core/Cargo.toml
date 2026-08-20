@@ -1,0 +1,20 @@
+[package]
+name = "rushai-core"
+description = "Engine for rushai: sessions, storage, and the agent loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusqlite = { workspace = true }
+rusqlite_migration = { workspace = true }
+rushai-protocol = { path = "../rushai-protocol" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
