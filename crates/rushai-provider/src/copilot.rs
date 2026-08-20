@@ -63,11 +63,24 @@ impl CopilotAuth {
     }
 
     pub fn with_base_urls(github_base: String, api_base: String) -> Self {
+        Self::with_client(crate::http_client(), github_base, api_base)
+    }
+
+    // Paused-clock tests race the connect timer against tokio's auto-advance,
+    // so they inject a timeout-free client here.
+    #[doc(hidden)]
+    pub fn with_client(client: reqwest::Client, github_base: String, api_base: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             github_base,
             api_base,
         }
+    }
+
+    /// One `tk_` exchange with no side effects, so login can prove the
+    /// account actually has Copilot access before claiming success.
+    pub async fn verify(&self, github_token: &str) -> Result<(), ProviderError> {
+        self.exchange(github_token).await.map(|_| ())
     }
 
     pub async fn start(&self) -> Result<DeviceCode, ProviderError> {
@@ -165,7 +178,7 @@ impl Copilot {
         chat_base: String,
     ) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: auth.client.clone(),
             auth,
             github_token,
             chat_base,
@@ -174,9 +187,10 @@ impl Copilot {
         }
     }
 
-    async fn fresh_token(&self) -> Result<String, ProviderError> {
+    async fn fresh_token(&self, force: bool) -> Result<String, ProviderError> {
         let mut slot = self.token.lock().await;
-        if let Some(token) = slot.as_ref()
+        if !force
+            && let Some(token) = slot.as_ref()
             && !token.needs_refresh()
         {
             return Ok(token.token.clone());
@@ -186,16 +200,13 @@ impl Copilot {
         *slot = Some(token);
         Ok(value)
     }
-}
 
-#[async_trait::async_trait]
-impl Provider for Copilot {
-    fn model(&self) -> &ModelInfo {
-        &self.model
-    }
-
-    async fn stream(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
-        let token = self.fresh_token().await?;
+    async fn try_stream(
+        &self,
+        request: &ChatRequest,
+        force_refresh: bool,
+    ) -> Result<EventStream, ProviderError> {
+        let token = self.fresh_token(force_refresh).await?;
         let response = self
             .client
             .post(format!("{}/chat/completions", self.chat_base))
@@ -204,9 +215,26 @@ impl Provider for Copilot {
             .header("editor-plugin-version", PLUGIN_VERSION)
             .header("copilot-integration-id", INTEGRATION_ID)
             .header("user-agent", USER_AGENT)
-            .json(&chat_body(&self.model, &request))
+            .json(&chat_body(&self.model, request))
             .send()
             .await?;
         Ok(chat_event_stream(check_status(response).await?))
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Copilot {
+    fn model(&self) -> &ModelInfo {
+        &self.model
+    }
+
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        // A cached token can be rejected before our refresh margin thinks
+        // it's stale (server-side revocation, clock skew). One forced
+        // re-exchange, then the error stands.
+        match self.try_stream(request, false).await {
+            Err(ProviderError::Api { status: 401, .. }) => self.try_stream(request, true).await,
+            other => other,
+        }
     }
 }

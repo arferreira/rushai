@@ -109,5 +109,16 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, ProviderE
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     fn model(&self) -> &ModelInfo;
-    async fn stream(&self, request: ChatRequest) -> Result<EventStream, ProviderError>;
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError>;
+}
+
+/// Connect timeout catches dead hosts; the read timeout only fires when a
+/// stream stalls between chunks, so long generations are unaffected. No
+/// whole-request timeout: streams legitimately run for minutes.
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(120))
+        .build()
+        .expect("default client config is valid")
 }

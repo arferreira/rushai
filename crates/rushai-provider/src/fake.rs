@@ -53,7 +53,7 @@ impl Provider for FakeProvider {
         &self.model
     }
 
-    async fn stream(&self, _request: ChatRequest) -> Result<EventStream, ProviderError> {
+    async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
         let script = self.script.clone();
         Ok(Box::pin(stream! {
             for entry in script {

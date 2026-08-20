@@ -26,7 +26,7 @@ impl Anthropic {
 
     pub fn with_base_url(api_key: String, model: ModelInfo, base_url: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
             base_url,
             api_key,
             model,
@@ -130,13 +130,13 @@ impl Provider for Anthropic {
         &self.model
     }
 
-    async fn stream(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         let response = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .json(&self.body(&request))
+            .json(&self.body(request))
             .send()
             .await?;
 

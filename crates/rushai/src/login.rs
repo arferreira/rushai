@@ -20,6 +20,9 @@ async fn login_copilot() -> anyhow::Result<()> {
     );
     println!("Waiting for approval...");
     let github_token = auth.poll(&code).await?;
+    if let Err(err) = auth.verify(&github_token).await {
+        anyhow::bail!("signed in to GitHub, but Copilot access failed: {err}");
+    }
 
     let store = AuthStore::new(paths::data_dir()?.join("auth.json"));
     let mut stored = store.load()?;

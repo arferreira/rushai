@@ -28,10 +28,10 @@ impl<P: Provider> Provider for Retrying<P> {
         self.inner.model()
     }
 
-    async fn stream(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         let mut attempt = 0;
         loop {
-            match self.inner.stream(request.clone()).await {
+            match self.inner.stream(request).await {
                 Ok(stream) => return Ok(stream),
                 Err(err) if attempt + 1 < MAX_ATTEMPTS && retryable(&err) => {
                     tokio::time::sleep(delay(&err, attempt)).await;
@@ -59,9 +59,14 @@ fn delay(err: &ProviderError, attempt: u32) -> Duration {
         ..
     } = err
     {
-        return (*after).min(CAP);
+        // Small jitter on top so a herd told "retry in 3s" spreads out.
+        let base = (*after).min(CAP);
+        return base + rand::rng().random_range(Duration::ZERO..=base / 4);
     }
-    let ceiling = CAP.min(BASE * 2u32.saturating_pow(attempt));
+    let ceiling = BASE
+        .checked_mul(2u32.saturating_pow(attempt))
+        .unwrap_or(CAP)
+        .min(CAP);
     rand::rng().random_range(Duration::ZERO..=ceiling)
 }
 
@@ -113,7 +118,7 @@ mod tests {
             &self.model
         }
 
-        async fn stream(&self, _request: ChatRequest) -> Result<EventStream, ProviderError> {
+        async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
             let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
             if attempt < self.failures {
                 return Err((self.error)());
@@ -135,14 +140,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retries_429_until_success() {
         let provider = Retrying::new(Flaky::new(2, overloaded));
-        assert!(provider.stream(ChatRequest::default()).await.is_ok());
+        assert!(provider.stream(&ChatRequest::default()).await.is_ok());
         assert_eq!(provider.inner.attempts.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test(start_paused = true)]
     async fn gives_up_after_max_attempts() {
         let provider = Retrying::new(Flaky::new(u32::MAX, overloaded));
-        assert!(provider.stream(ChatRequest::default()).await.is_err());
+        assert!(provider.stream(&ChatRequest::default()).await.is_err());
         assert_eq!(provider.inner.attempts.load(Ordering::SeqCst), 5);
     }
 
@@ -153,7 +158,7 @@ mod tests {
             message: "bad key".into(),
             retry_after: None,
         }));
-        assert!(provider.stream(ChatRequest::default()).await.is_err());
+        assert!(provider.stream(&ChatRequest::default()).await.is_err());
         assert_eq!(provider.inner.attempts.load(Ordering::SeqCst), 1);
     }
 
@@ -165,7 +170,11 @@ mod tests {
             retry_after: Some(Duration::from_secs(7)),
         }));
         let started = tokio::time::Instant::now();
-        assert!(provider.stream(ChatRequest::default()).await.is_ok());
-        assert_eq!(started.elapsed(), Duration::from_secs(7));
+        assert!(provider.stream(&ChatRequest::default()).await.is_ok());
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(7) && elapsed <= Duration::from_millis(8750),
+            "elapsed {elapsed:?} outside retry-after + jitter window"
+        );
     }
 }

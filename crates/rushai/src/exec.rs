@@ -28,7 +28,7 @@ pub async fn run(
         ..Default::default()
     };
 
-    let mut stream = provider.stream(request).await?;
+    let mut stream = provider.stream(&request).await?;
     let mut usage = TokenUsage::default();
     let mut out = std::io::stdout();
     while let Some(event) = stream.next().await {

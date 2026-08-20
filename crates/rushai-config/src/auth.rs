@@ -58,25 +58,31 @@ impl AuthStore {
     }
 }
 
+// Atomic: write a private temp file, then rename over the target. Perms are
+// set unconditionally so a pre-existing world-readable file cannot survive.
 // 0600 on unix; Windows files inherit the user profile ACL, which is
 // already private to the user.
-#[cfg(unix)]
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
+    let tmp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
@@ -100,12 +106,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn auth_file_is_owner_only() {
+    fn auth_file_is_owner_only_even_when_it_preexists() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("auth.json");
         let store = AuthStore::new(path.clone());
+
+        store.save(&Auth::default()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        // A file that leaked to 0644 earlier must come back private.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         store.save(&Auth::default()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
