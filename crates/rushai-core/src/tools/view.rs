@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use rushai_provider::ToolDef;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -5,10 +7,11 @@ use serde_json::Value;
 
 use super::{missing, resolve};
 use crate::permission::PermissionSpec;
-use crate::tool::{Tool, ToolCtx, ToolError, parse_input, schema_for};
+use crate::tool::{RunToken, Tool, ToolCtx, ToolError, parse_input, schema_for};
 
 const MAX_LINES: usize = 2000;
 const MAX_BYTES: usize = 256 * 1024;
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Deserialize, JsonSchema)]
 struct Input {
@@ -40,11 +43,18 @@ impl Tool for View {
         None
     }
 
-    async fn run(&self, ctx: &ToolCtx, input: Value) -> Result<String, ToolError> {
+    async fn run(&self, ctx: &ToolCtx, input: Value, _run: RunToken) -> Result<String, ToolError> {
         let input: Input = parse_input(input)?;
         let path = resolve(&ctx.cwd, &input.path);
         if !path.is_file() {
             return Err(missing(&input.path));
+        }
+        let size = tokio::fs::metadata(&path).await?.len();
+        if size > MAX_FILE_BYTES {
+            return Err(ToolError::Failed(format!(
+                "{} is {size} bytes, too large to view; use grep to search it",
+                input.path
+            )));
         }
         let bytes = tokio::fs::read(&path).await?;
         if bytes[..bytes.len().min(8192)].contains(&0) {
@@ -65,7 +75,7 @@ impl Tool for View {
                 truncated = true;
                 break;
             }
-            out.push_str(&format!("{:>5}\t{}\n", n + 1, line));
+            let _ = writeln!(out, "{:>5}\t{}", n + 1, line);
             shown += 1;
         }
         if shown == 0 && !truncated {

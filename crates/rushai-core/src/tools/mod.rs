@@ -13,6 +13,8 @@ pub use view::View;
 use crate::tool::ToolError;
 
 /// Resolve a tool path argument against the working directory.
+/// Absolute paths are allowed for reads; write tools will need their own
+/// policy before they ship.
 fn resolve(cwd: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
@@ -23,5 +25,5 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
 }
 
 fn missing(path: &str) -> ToolError {
-    ToolError::Failed(format!("{path} does not exist"))
+    ToolError::NotFound(path.to_owned())
 }

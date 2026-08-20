@@ -22,6 +22,8 @@ pub enum ToolError {
     Input(String),
     #[error(transparent)]
     Permission(#[from] PermissionError),
+    #[error("{0} does not exist")]
+    NotFound(String),
     #[error("{0}")]
     Failed(String),
     #[error(transparent)]
@@ -30,21 +32,31 @@ pub enum ToolError {
     Canceled,
 }
 
+/// Proof that a call came through [`dispatch`]. Only this crate can construct
+/// one, so `run` cannot be called around the permission gate.
+pub struct RunToken(pub(crate) ());
+
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn def(&self) -> ToolDef;
     /// None means the tool needs no grant (read-only tools).
     fn permission(&self, input: &Value) -> Option<PermissionSpec>;
-    async fn run(&self, ctx: &ToolCtx, input: Value) -> Result<String, ToolError>;
+    async fn run(&self, ctx: &ToolCtx, input: Value, run: RunToken) -> Result<String, ToolError>;
 }
 
 /// The only path from a tool call to execution: permission gate, then run.
 pub async fn dispatch(tool: &dyn Tool, ctx: &ToolCtx, input: Value) -> Result<String, ToolError> {
-    if let Some(spec) = tool.permission(&input) {
+    if let Some(mut spec) = tool.permission(&input) {
+        if let Some(path) = spec.path.take() {
+            // Grant keys are absolute so a grant in one project can never
+            // apply to a same-named relative path in another.
+            let absolute = std::path::absolute(ctx.cwd.join(&path))?;
+            spec.path = Some(absolute.to_string_lossy().into_owned());
+        }
         ctx.permissions.ensure(&ctx.session, &spec).await?;
     }
-    tool.run(ctx, input).await
+    tool.run(ctx, input, RunToken(())).await
 }
 
 pub(crate) fn parse_input<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, ToolError> {

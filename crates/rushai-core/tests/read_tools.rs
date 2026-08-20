@@ -68,7 +68,7 @@ async fn view_rejects_binary_and_missing_files() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, ToolError::Failed(m) if m.contains("does not exist")),
+        matches!(&err, ToolError::NotFound(p) if p == "nope.txt"),
         "{err}"
     );
 }

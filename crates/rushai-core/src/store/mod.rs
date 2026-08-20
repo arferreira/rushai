@@ -191,7 +191,7 @@ impl Store {
                 conn.execute(
                     "INSERT OR IGNORE INTO permission_grants (tool, action, path, created_at) \
                      VALUES (?1, ?2, ?3, ?4)",
-                    params![tool, action, path.unwrap_or_default(), now_ms()],
+                    params![tool, action, grant_path(path), now_ms()],
                 )?;
                 Ok(())
             })
@@ -209,7 +209,7 @@ impl Store {
                 let count: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM permission_grants \
                      WHERE tool = ?1 AND action = ?2 AND path = ?3",
-                    params![tool, action, path.unwrap_or_default()],
+                    params![tool, action, grant_path(path)],
                     |row| row.get(0),
                 )?;
                 Ok(count > 0)
@@ -303,6 +303,12 @@ fn role_str(role: Role) -> &'static str {
         Role::User => "user",
         Role::Assistant => "assistant",
     }
+}
+
+/// Pathless grants use a NUL sentinel in the primary key; NUL cannot occur
+/// in a real path, so it can never collide with one.
+fn grant_path(path: Option<String>) -> String {
+    path.unwrap_or_else(|| "\u{0}".into())
 }
 
 fn now_ms() -> i64 {

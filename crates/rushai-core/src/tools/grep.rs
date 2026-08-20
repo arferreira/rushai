@@ -1,17 +1,21 @@
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use rushai_provider::ToolDef;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::{missing, resolve};
 use crate::permission::PermissionSpec;
-use crate::tool::{Tool, ToolCtx, ToolError, parse_input, schema_for};
+use crate::tool::{RunToken, Tool, ToolCtx, ToolError, parse_input, schema_for};
 
 const MAX_MATCHES: usize = 200;
 const MAX_BYTES: usize = 100 * 1024;
+const READ_CAP: usize = MAX_BYTES * 2;
+const MAX_FILES: usize = 10_000;
 
 #[derive(Deserialize, JsonSchema)]
 struct Input {
@@ -43,7 +47,7 @@ impl Tool for Grep {
         None
     }
 
-    async fn run(&self, ctx: &ToolCtx, input: Value) -> Result<String, ToolError> {
+    async fn run(&self, ctx: &ToolCtx, input: Value, _run: RunToken) -> Result<String, ToolError> {
         let input: Input = parse_input(input)?;
         let shown = input.path.as_deref().unwrap_or(".");
         let target = resolve(&ctx.cwd, shown);
@@ -52,13 +56,21 @@ impl Tool for Grep {
         }
         let raw = match rg(&input, &target, ctx).await {
             Some(result) => result?,
-            None => walk(&input, &target, ctx)?,
+            None => {
+                let cancel = ctx.cancel.clone();
+                let pattern = input.pattern.clone();
+                let include = input.include.clone();
+                tokio::task::spawn_blocking(move || walk(&pattern, include, &target, &cancel))
+                    .await
+                    .map_err(|e| ToolError::Failed(format!("search task failed: {e}")))??
+            }
         };
         Ok(cap(raw))
     }
 }
 
-/// `path:line:content` lines, or None when rg is not installed.
+/// Run rg and return `path:line:content` lines. None when rg is not
+/// installed (any other spawn failure is a real error).
 async fn rg(input: &Input, target: &Path, ctx: &ToolCtx) -> Option<Result<String, ToolError>> {
     let mut cmd = tokio::process::Command::new("rg");
     cmd.arg("--line-number")
@@ -69,50 +81,85 @@ async fn rg(input: &Input, target: &Path, ctx: &ToolCtx) -> Option<Result<String
         cmd.arg("-g").arg(include);
     }
     cmd.arg("-e").arg(&input.pattern).arg(target);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // stderr is discarded, not piped: an unread pipe would deadlock rg.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     cmd.kill_on_drop(true);
 
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(_) => return None,
-    };
-    let stdout = child.stdout.take().expect("piped stdout");
-    let read = async {
-        let mut out = String::new();
-        use tokio::io::AsyncReadExt;
-        let mut reader = tokio::io::BufReader::new(stdout).take((MAX_BYTES * 2) as u64);
-        reader.read_to_string(&mut out).await?;
-        let status = child.wait().await?;
-        // rg exits 1 on no matches; only 2+ is an error.
-        if status.code() == Some(2) {
-            return Err(ToolError::Failed("rg failed".into()));
-        }
-        Ok(out)
-    };
-    let result = tokio::select! {
-        result = read => result,
-        _ = ctx.cancel.cancelled() => Err(ToolError::Canceled),
-    };
-    Some(result)
+    match cmd.spawn() {
+        Ok(child) => Some(rg_read(child, ctx).await),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => Some(Err(e.into())),
+    }
 }
 
-/// Fallback without rg: regex walk producing the same `path:line:content` shape.
-fn walk(input: &Input, target: &Path, ctx: &ToolCtx) -> Result<String, ToolError> {
-    let re = regex::Regex::new(&input.pattern)
-        .map_err(|e| ToolError::Input(format!("bad pattern: {e}")))?;
-    let include = input
-        .include
+async fn rg_read(mut child: tokio::process::Child, ctx: &ToolCtx) -> Result<String, ToolError> {
+    use tokio::io::AsyncReadExt;
+
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut reader = tokio::io::BufReader::new(stdout).take(READ_CAP as u64 + 1);
+    let mut buf = Vec::new();
+    tokio::select! {
+        result = reader.read_to_end(&mut buf) => {
+            result?;
+        }
+        _ = ctx.cancel.cancelled() => {
+            let _ = child.start_kill();
+            return Err(ToolError::Canceled);
+        }
+    }
+    if buf.len() > READ_CAP {
+        // Cap hit: stop rg instead of draining it; we already have more
+        // output than we will show, and a blocked rg would deadlock wait().
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    } else {
+        let status = child.wait().await?;
+        // rg exits 0 on matches, 1 on none; anything else, including a
+        // signal death (code() == None), is a failure.
+        if !matches!(status.code(), Some(0) | Some(1)) {
+            return Err(ToolError::Failed("rg failed".into()));
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Fallback without rg: regex walk producing the same `path:line:content`
+/// shape. Symlinks are skipped entirely, so cycles cannot occur, and the
+/// number of files scanned is bounded.
+fn walk(
+    pattern: &str,
+    include: Option<String>,
+    target: &Path,
+    cancel: &CancellationToken,
+) -> Result<String, ToolError> {
+    let re =
+        regex::Regex::new(pattern).map_err(|e| ToolError::Input(format!("bad pattern: {e}")))?;
+    let include = include
         .as_deref()
         .map(glob::Pattern::new)
         .transpose()
         .map_err(|e| ToolError::Input(format!("bad include: {e}")))?;
     let mut out = String::new();
-    let mut stack = vec![target.to_path_buf()];
+    let mut scanned = 0usize;
+    let mut stack: Vec<PathBuf> = vec![target.to_path_buf()];
+    let mut first = true;
     while let Some(path) = stack.pop() {
-        if ctx.cancel.is_cancelled() {
+        if cancel.is_cancelled() {
             return Err(ToolError::Canceled);
         }
-        if path.is_dir() {
+        // The explicit target may be a symlink (follow it); below it,
+        // symlinks are never followed.
+        let meta = if first {
+            std::fs::metadata(&path)
+        } else {
+            std::fs::symlink_metadata(&path)
+        };
+        first = false;
+        let Ok(meta) = meta else { continue };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             if name == ".git" || name == "target" || name == "node_modules" {
                 continue;
@@ -121,6 +168,11 @@ fn walk(input: &Input, target: &Path, ctx: &ToolCtx) -> Result<String, ToolError
                 stack.push(entry.path());
             }
             continue;
+        }
+        scanned += 1;
+        if scanned > MAX_FILES {
+            out.push_str("... search stopped: too many files, narrow the path\n");
+            break;
         }
         if let Some(pattern) = &include {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -139,7 +191,7 @@ fn walk(input: &Input, target: &Path, ctx: &ToolCtx) -> Result<String, ToolError
             if re.is_match(line) {
                 out.push_str(&format!("{}:{}:{}\n", path.display(), n + 1, line));
             }
-            if out.len() > MAX_BYTES * 2 {
+            if out.len() > READ_CAP {
                 return Ok(out);
             }
         }

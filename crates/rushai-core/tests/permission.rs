@@ -99,6 +99,62 @@ async fn deny_is_an_error_not_a_grant() {
 }
 
 #[tokio::test]
+async fn concurrent_ensures_share_one_request() {
+    let store = Store::open_in_memory().unwrap();
+    let (service, mut rx) = PermissionService::new(false, store);
+    let service = std::sync::Arc::new(service);
+    let session = SessionId::new();
+
+    // Drive the first waiter until its request is out.
+    let first = tokio::spawn({
+        let service = service.clone();
+        let session = session.clone();
+        async move { service.ensure(&session, &spec()).await }
+    });
+    let request = rx.recv().await.expect("a permission request");
+
+    // The second waiter attaches on its first poll (coalescing happens
+    // before any store access), so resolving afterwards reaches both.
+    let spec = spec();
+    let (second, _) = tokio::join!(service.ensure(&session, &spec), async {
+        service.resolve(&request.id, Decision::Once);
+    });
+    second.unwrap();
+    first.await.unwrap().unwrap();
+    assert_no_request(&mut rx);
+}
+
+#[tokio::test]
+async fn dropped_ensure_does_not_leak_its_request() {
+    let store = Store::open_in_memory().unwrap();
+    let (service, mut rx) = PermissionService::new(false, store);
+    let service = std::sync::Arc::new(service);
+    let session = SessionId::new();
+
+    let waiting = tokio::spawn({
+        let service = service.clone();
+        let session = session.clone();
+        async move {
+            let _ = service.ensure(&session, &spec()).await;
+        }
+    });
+    let first = rx.recv().await.expect("a permission request");
+    waiting.abort();
+    let _ = waiting.await;
+
+    // The dropped waiter's entry must be gone: a new ensure for the same key
+    // sends a fresh request instead of attaching to the dead one and hanging.
+    let (result, second) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ask(&service, &mut rx, &session, Decision::Once),
+    )
+    .await
+    .expect("ensure hung on a leaked in-flight request");
+    result.unwrap();
+    assert_ne!(second.id, first.id);
+}
+
+#[tokio::test]
 async fn yolo_skips_all_requests() {
     let store = Store::open_in_memory().unwrap();
     let (service, mut rx) = PermissionService::new(true, store);

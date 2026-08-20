@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::{missing, resolve};
 use crate::permission::PermissionSpec;
-use crate::tool::{Tool, ToolCtx, ToolError, parse_input, schema_for};
+use crate::tool::{RunToken, Tool, ToolCtx, ToolError, parse_input, schema_for};
 
 const MAX_ENTRIES: usize = 1000;
 
@@ -35,7 +35,7 @@ impl Tool for Ls {
         None
     }
 
-    async fn run(&self, ctx: &ToolCtx, input: Value) -> Result<String, ToolError> {
+    async fn run(&self, ctx: &ToolCtx, input: Value, _run: RunToken) -> Result<String, ToolError> {
         let input: Input = parse_input(input)?;
         let shown = input.path.as_deref().unwrap_or(".");
         let path = resolve(&ctx.cwd, shown);
@@ -45,6 +45,9 @@ impl Tool for Ls {
         let mut entries: Vec<String> = Vec::new();
         let mut dir = tokio::fs::read_dir(&path).await?;
         while let Some(entry) = dir.next_entry().await? {
+            if ctx.cancel.is_cancelled() {
+                return Err(ToolError::Canceled);
+            }
             let mut name = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type().await?.is_dir() {
                 name.push('/');
