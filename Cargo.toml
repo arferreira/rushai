@@ -5,6 +5,7 @@ members = [
     "crates/rushai-config",
     "crates/rushai-core",
     "crates/rushai-protocol",
+    "crates/rushai-provider",
 ]
 
 [workspace.package]
@@ -16,10 +17,15 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 anyhow = "1"
+async-stream = "0.3"
+async-trait = "0.1"
 assert_cmd = "2"
 clap = { version = "4", features = ["derive"] }
 jiff = "0.2"
 dotenvy = "0.15"
+eventsource-stream = "0.2"
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "rustls-native-certs", "http2", "charset"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2"
 schemars = "1"
@@ -28,6 +34,7 @@ serde_json = "1"
 serde_path_to_error = "0.1"
 tempfile = "3"
 tracing = "0.1"
+wiremock = "0.6"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 tokio = { version = "1", features = ["sync"] }
