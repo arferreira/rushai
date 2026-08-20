@@ -50,6 +50,7 @@ pub struct StoredMessage {
     pub created_at: i64,
 }
 
+#[derive(Clone)]
 pub struct Store {
     db: Db,
 }
@@ -175,6 +176,43 @@ impl Store {
                 )?;
                 tx.commit()?;
                 Ok(())
+            })
+            .await
+    }
+
+    pub async fn save_grant(
+        &self,
+        tool: String,
+        action: String,
+        path: Option<String>,
+    ) -> Result<(), StoreError> {
+        self.db
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO permission_grants (tool, action, path, created_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![tool, action, path.unwrap_or_default(), now_ms()],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn has_grant(
+        &self,
+        tool: String,
+        action: String,
+        path: Option<String>,
+    ) -> Result<bool, StoreError> {
+        self.db
+            .call(move |conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM permission_grants \
+                     WHERE tool = ?1 AND action = ?2 AND path = ?3",
+                    params![tool, action, path.unwrap_or_default()],
+                    |row| row.get(0),
+                )?;
+                Ok(count > 0)
             })
             .await
     }
