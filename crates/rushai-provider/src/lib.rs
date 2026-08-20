@@ -5,8 +5,10 @@
 //! reasoning signatures, endpoint routing) stay inside the impl.
 
 mod anthropic;
+pub mod copilot;
 pub mod fake;
 mod openai_compat;
+mod retry;
 
 use std::pin::Pin;
 
@@ -16,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use anthropic::Anthropic;
+pub use copilot::{Copilot, CopilotAuth, DeviceCode};
 pub use openai_compat::OpenAiCompat;
+pub use retry::Retrying;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelInfo {
@@ -88,7 +92,12 @@ pub enum ProviderError {
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("api error {status}: {message}")]
-    Api { status: u16, message: String },
+    Api {
+        status: u16,
+        message: String,
+        /// Parsed from a Retry-After header when the server sent one.
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("stream error: {0}")]
     Stream(String),
     #[error("unexpected provider event: {0}")]
@@ -100,5 +109,16 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, ProviderE
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     fn model(&self) -> &ModelInfo;
-    async fn stream(&self, request: ChatRequest) -> Result<EventStream, ProviderError>;
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError>;
+}
+
+/// Connect timeout catches dead hosts; the read timeout only fires when a
+/// stream stalls between chunks, so long generations are unaffected. No
+/// whole-request timeout: streams legitimately run for minutes.
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(120))
+        .build()
+        .expect("default client config is valid")
 }

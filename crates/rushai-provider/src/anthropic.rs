@@ -26,7 +26,7 @@ impl Anthropic {
 
     pub fn with_base_url(api_key: String, model: ModelInfo, base_url: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
             base_url,
             api_key,
             model,
@@ -130,22 +130,24 @@ impl Provider for Anthropic {
         &self.model
     }
 
-    async fn stream(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         let response = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .json(&self.body(&request))
+            .json(&self.body(request))
             .send()
             .await?;
 
         let status = response.status();
         if !status.is_success() {
+            let retry_after = crate::retry::parse_retry_after(response.headers());
             let message = response.text().await.unwrap_or_default();
             return Err(ProviderError::Api {
                 status: status.as_u16(),
                 message,
+                retry_after,
             });
         }
 
@@ -227,7 +229,11 @@ impl Provider for Anthropic {
                     "error" => {
                         let message =
                             data["error"]["message"].as_str().unwrap_or_default().to_owned();
-                        Err(ProviderError::Api { status: 0, message })?;
+                        Err(ProviderError::Api {
+                            status: 0,
+                            message,
+                            retry_after: None,
+                        })?;
                     }
                     _ => {}
                 }

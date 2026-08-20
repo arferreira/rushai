@@ -1,4 +1,5 @@
 mod exec;
+mod login;
 mod paths;
 
 use anyhow::Context;
@@ -28,6 +29,8 @@ enum Command {
     },
     /// List sessions, most recently updated first
     Sessions,
+    /// Sign in to a provider (currently: copilot)
+    Login { provider: String },
     /// Run a prompt headlessly and stream the answer to stdout
     Exec {
         #[arg(short, long)]
@@ -68,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Sessions => list_sessions().await,
+        Command::Login { provider } => login::run(&provider).await,
         Command::Exec {
             prompt,
             model,

@@ -11,6 +11,7 @@
 //! `.env` files at the git root and working directory are loaded into the
 //! environment map; real environment variables win over them.
 
+mod auth;
 mod discover;
 mod env;
 mod error;
@@ -23,6 +24,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use auth::{Auth, AuthStore, CopilotAuthEntry};
 pub use error::ConfigError;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

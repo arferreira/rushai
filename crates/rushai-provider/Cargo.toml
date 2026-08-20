@@ -14,12 +14,14 @@ async-stream = { workspace = true }
 async-trait = { workspace = true }
 eventsource-stream = { workspace = true }
 futures = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 rushai-protocol = { path = "../rushai-protocol", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 wiremock = { workspace = true }

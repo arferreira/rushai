@@ -2,7 +2,7 @@ use futures::StreamExt;
 use rushai_protocol::{Part, Role, TokenUsage};
 use rushai_provider::{
     ChatMessage, ChatRequest, ModelInfo, OpenAiCompat, Provider, ProviderError, ProviderEvent,
-    StopReason, ToolDef,
+    Retrying, StopReason, ToolDef,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path};
@@ -39,7 +39,7 @@ async fn streams_text_reasoning_and_tool_calls() {
         .await;
 
     let stream = provider(&server)
-        .stream(ChatRequest::default())
+        .stream(&ChatRequest::default())
         .await
         .unwrap();
     let events: Vec<_> = stream
@@ -134,7 +134,7 @@ async fn request_body_maps_parts_to_wire_messages() {
         }],
         max_tokens: Some(512),
     };
-    let stream = provider(&server).stream(request).await.unwrap();
+    let stream = provider(&server).stream(&request).await.unwrap();
     let _: Vec<_> = stream.collect().await;
 
     let sent: Vec<Request> = server.received_requests().await.unwrap();
@@ -170,7 +170,7 @@ async fn http_error_is_reported_with_status() {
         .mount(&server)
         .await;
 
-    let err = match provider(&server).stream(ChatRequest::default()).await {
+    let err = match provider(&server).stream(&ChatRequest::default()).await {
         Err(err) => err,
         Ok(_) => panic!("expected an error"),
     };
@@ -193,7 +193,7 @@ async fn live_stream_smoke() {
         "https://api.openai.com/v1".into(),
     );
     let stream = provider
-        .stream(ChatRequest {
+        .stream(&ChatRequest {
             messages: vec![ChatMessage {
                 role: Role::User,
                 parts: vec![Part::Text {
@@ -211,4 +211,41 @@ async fn live_stream_smoke() {
             .iter()
             .any(|e| matches!(e, Ok(ProviderEvent::TextDelta(_))))
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_after_header_drives_the_backoff_delay() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "3")
+                .set_body_string("try later"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(sse_response("data: [DONE]\n\n"))
+        .mount(&server)
+        .await;
+
+    let retrying = Retrying::new(OpenAiCompat::with_client(
+        reqwest::Client::new(),
+        "test-key".into(),
+        model(),
+        format!("{}/v1", server.uri()),
+    ));
+    let started = tokio::time::Instant::now();
+    let stream = retrying.stream(&ChatRequest::default()).await.unwrap();
+    let _: Vec<_> = stream.collect().await;
+    let elapsed = started.elapsed();
+    // Lower bound only: in-process wiremock timers inflate the virtual clock.
+    assert!(
+        elapsed >= std::time::Duration::from_secs(3),
+        "elapsed {elapsed:?} ignores Retry-After"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }

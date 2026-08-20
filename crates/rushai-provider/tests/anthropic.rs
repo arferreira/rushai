@@ -27,7 +27,7 @@ async fn collect(
     request: ChatRequest,
 ) -> Vec<Result<ProviderEvent, ProviderError>> {
     let provider = Anthropic::with_base_url("test-key".into(), model(), server.uri());
-    let stream = provider.stream(request).await.unwrap();
+    let stream = provider.stream(&request).await.unwrap();
     stream.collect().await
 }
 
@@ -124,7 +124,7 @@ async fn http_error_is_reported_with_status() {
         .await;
 
     let provider = Anthropic::with_base_url("test-key".into(), model(), server.uri());
-    let err = match provider.stream(ChatRequest::default()).await {
+    let err = match provider.stream(&ChatRequest::default()).await {
         Err(err) => err,
         Ok(_) => panic!("expected an error"),
     };
@@ -223,7 +223,7 @@ async fn live_stream_smoke() {
         },
     );
     let stream = provider
-        .stream(ChatRequest {
+        .stream(&ChatRequest {
             messages: vec![ChatMessage {
                 role: Role::User,
                 parts: vec![Part::Text {
