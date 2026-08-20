@@ -4,11 +4,17 @@ use serde_json::{Map, Value};
 
 use crate::error::ConfigError;
 
+/// Variables the binary consumes directly; they are not config fields.
+const RESERVED: &[&str] = &["RUSHAI_LOG", "RUSHAI_DATA_DIR"];
+
 /// Overlay `RUSHAI_*` variables onto the config value.
 /// `__` separates path segments; values parse as JSON when possible,
 /// otherwise as strings.
 pub(crate) fn apply_automap(root: &mut Value, env: &BTreeMap<String, String>) {
     for (key, raw) in env {
+        if RESERVED.contains(&key.as_str()) {
+            continue;
+        }
         let Some(rest) = key.strip_prefix("RUSHAI_") else {
             continue;
         };

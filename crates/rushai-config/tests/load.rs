@@ -123,3 +123,12 @@ fn invalid_json_names_the_file() {
     let err = loader(tmp.path(), None).load().unwrap_err();
     assert!(err.to_string().contains("rushai.json"));
 }
+
+#[test]
+fn reserved_env_vars_are_not_config_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut l = loader(tmp.path(), None);
+    l.env.insert("RUSHAI_LOG".into(), "debug".into());
+    l.env.insert("RUSHAI_DATA_DIR".into(), "/tmp/x".into());
+    assert!(l.load().is_ok());
+}
