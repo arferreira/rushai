@@ -5,11 +5,13 @@
 //! reasoning signatures, endpoint routing) stay inside the impl.
 
 mod anthropic;
+pub mod fake;
 
 use std::pin::Pin;
 
 use futures::Stream;
 use rushai_protocol::{CallId, Part, Role, TokenUsage};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use anthropic::Anthropic;
@@ -44,7 +46,8 @@ pub struct ChatRequest {
     pub max_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ProviderEvent {
     TextDelta(String),
     Reasoning {
@@ -69,7 +72,8 @@ pub enum ProviderEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
     ToolUse,

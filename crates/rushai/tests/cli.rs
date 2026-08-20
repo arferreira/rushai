@@ -69,3 +69,63 @@ fn sessions_reads_the_store() {
     let out = String::from_utf8(listed.get_output().stdout.clone()).unwrap();
     assert!(out.contains("hello rushai"), "{out}");
 }
+
+#[test]
+fn exec_streams_a_fake_script() {
+    let tmp = tempfile::tempdir().unwrap();
+    let script = tmp.path().join("script.json");
+    fs::write(
+        &script,
+        r#"[
+          {"kind":"event","type":"text_delta","data":"hello "},
+          {"kind":"event","type":"text_delta","data":"world"},
+          {"kind":"event","type":"usage","data":{"input":3,"output":2,"cache_read":0,"cache_write":0}},
+          {"kind":"event","type":"done","data":{"stop":"end_turn"}}
+        ]"#,
+    )
+    .unwrap();
+    let assert = rush()
+        .args(["exec", "-p", "hi"])
+        .arg("--fake-provider")
+        .arg(&script)
+        .assert()
+        .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert_eq!(out, "hello world\n");
+    let err = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(err.contains("3 in, 2 out"), "{err}");
+}
+
+#[test]
+fn exec_fault_script_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let script = tmp.path().join("script.json");
+    fs::write(
+        &script,
+        r#"[
+          {"kind":"event","type":"text_delta","data":"partial"},
+          {"kind":"fault","message":"connection reset"}
+        ]"#,
+    )
+    .unwrap();
+    rush()
+        .args(["exec", "-p", "hi"])
+        .arg("--fake-provider")
+        .arg(&script)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("connection reset"));
+}
+
+#[test]
+fn exec_without_key_says_how_to_set_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    rush()
+        .current_dir(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path().join("xdg"))
+        .env_remove("ANTHROPIC_API_KEY")
+        .args(["exec", "-p", "hi"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("ANTHROPIC_API_KEY"));
+}
