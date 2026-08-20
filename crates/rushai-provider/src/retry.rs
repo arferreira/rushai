@@ -104,6 +104,7 @@ mod tests {
                     id: "flaky".into(),
                     context_window: 1,
                     max_output: 1,
+                    cost: None,
                 },
                 attempts: AtomicU32::new(0),
                 failures,

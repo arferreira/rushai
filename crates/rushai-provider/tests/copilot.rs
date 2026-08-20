@@ -11,6 +11,7 @@ fn model() -> ModelInfo {
         id: "gpt-5.2".into(),
         context_window: 128_000,
         max_output: 16_000,
+        cost: None,
     }
 }
 

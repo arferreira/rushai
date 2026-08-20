@@ -5,6 +5,8 @@
 //! reasoning signatures, endpoint routing) stay inside the impl.
 
 mod anthropic;
+pub mod catalog;
+pub mod claude_bridge;
 pub mod copilot;
 pub mod fake;
 mod openai_compat;
@@ -18,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use anthropic::Anthropic;
+pub use claude_bridge::ClaudeBridge;
 pub use copilot::{Copilot, CopilotAuth, DeviceCode};
 pub use openai_compat::OpenAiCompat;
 pub use retry::Retrying;
@@ -28,6 +31,27 @@ pub struct ModelInfo {
     pub id: String,
     pub context_window: u64,
     pub max_output: u64,
+    pub cost: Option<ModelCost>,
+}
+
+/// USD per million tokens.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelCost {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl ModelCost {
+    pub fn estimate(&self, usage: &TokenUsage) -> f64 {
+        (usage.input as f64 * self.input
+            + usage.output as f64 * self.output
+            + usage.cache_read as f64 * self.cache_read
+            + usage.cache_write as f64 * self.cache_write)
+            / 1_000_000.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

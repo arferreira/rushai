@@ -13,6 +13,7 @@ fn model() -> ModelInfo {
         id: "claude-opus-5".into(),
         context_window: 200_000,
         max_output: 8192,
+        cost: None,
     }
 }
 
@@ -208,6 +209,44 @@ async fn request_body_maps_parts_and_places_cache_breakpoints() {
     assert_eq!(messages[2]["content"][0]["tool_use_id"], "toolu_1");
 }
 
+#[tokio::test]
+async fn explicit_max_tokens_wins_over_catalog_max_output() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(sse_response(include_str!("fixtures/mid_stream_error.sse")))
+        .mount(&server)
+        .await;
+
+    let model = rushai_provider::catalog::lookup("anthropic", "sonnet").unwrap();
+    assert_eq!(model.max_output, 128_000);
+    let provider = Anthropic::with_base_url("test-key".into(), model, server.uri());
+
+    let request = ChatRequest {
+        max_tokens: Some(8192),
+        ..Default::default()
+    };
+    let _ = provider
+        .stream(&request)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    // Without an explicit value the model's max_output is the fallback.
+    let request = ChatRequest::default();
+    let _ = provider
+        .stream(&request)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+
+    let sent: Vec<Request> = server.received_requests().await.unwrap();
+    let first: Value = serde_json::from_slice(&sent[0].body).unwrap();
+    let second: Value = serde_json::from_slice(&sent[1].body).unwrap();
+    assert_eq!(first["max_tokens"], 8192);
+    assert_eq!(second["max_tokens"], 128_000);
+}
+
 /// Live smoke test. Run with:
 /// `ANTHROPIC_API_KEY=... cargo test -p rushai-provider -- --ignored`
 #[tokio::test]
@@ -220,6 +259,7 @@ async fn live_stream_smoke() {
             id: "claude-haiku-4-5-20251001".into(),
             context_window: 200_000,
             max_output: 1024,
+            cost: None,
         },
     );
     let stream = provider

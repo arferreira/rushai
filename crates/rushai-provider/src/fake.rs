@@ -27,6 +27,7 @@ impl FakeProvider {
                 id: "fake".into(),
                 context_window: 200_000,
                 max_output: 8192,
+                cost: None,
             },
             script,
         }
