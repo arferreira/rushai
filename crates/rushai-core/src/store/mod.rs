@@ -50,6 +50,7 @@ pub struct StoredMessage {
     pub created_at: i64,
 }
 
+#[derive(Clone)]
 pub struct Store {
     db: Db,
 }
@@ -179,6 +180,43 @@ impl Store {
             .await
     }
 
+    pub async fn save_grant(
+        &self,
+        tool: String,
+        action: String,
+        path: Option<String>,
+    ) -> Result<(), StoreError> {
+        self.db
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO permission_grants (tool, action, path, created_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![tool, action, grant_path(path), now_ms()],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn has_grant(
+        &self,
+        tool: String,
+        action: String,
+        path: Option<String>,
+    ) -> Result<bool, StoreError> {
+        self.db
+            .call(move |conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM permission_grants \
+                     WHERE tool = ?1 AND action = ?2 AND path = ?3",
+                    params![tool, action, grant_path(path)],
+                    |row| row.get(0),
+                )?;
+                Ok(count > 0)
+            })
+            .await
+    }
+
     /// Messages for a session in creation order.
     pub async fn messages(&self, session: &SessionId) -> Result<Vec<StoredMessage>, StoreError> {
         let session = session.clone();
@@ -265,6 +303,12 @@ fn role_str(role: Role) -> &'static str {
         Role::User => "user",
         Role::Assistant => "assistant",
     }
+}
+
+/// Pathless grants use a NUL sentinel in the primary key; NUL cannot occur
+/// in a real path, so it can never collide with one.
+fn grant_path(path: Option<String>) -> String {
+    path.unwrap_or_else(|| "\u{0}".into())
 }
 
 fn now_ms() -> i64 {

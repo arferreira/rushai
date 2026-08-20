@@ -10,6 +10,7 @@ type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
 /// All SQLite access runs on one dedicated thread so the async runtime
 /// never blocks on the database.
+#[derive(Clone)]
 pub(crate) struct Db {
     tx: mpsc::Sender<Job>,
 }
@@ -54,7 +55,10 @@ impl Db {
 }
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(include_str!("../../migrations/001_init.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("../../migrations/001_init.sql")),
+        M::up(include_str!("../../migrations/002_permission_grants.sql")),
+    ])
 }
 
 #[cfg(test)]

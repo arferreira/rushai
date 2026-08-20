@@ -11,13 +11,20 @@ keywords = ["ai", "agent", "llm"]
 categories = ["development-tools"]
 
 [dependencies]
+async-trait = { workspace = true }
+glob = { workspace = true }
+regex = { workspace = true }
 rusqlite = { workspace = true }
 rusqlite_migration = { workspace = true }
 rushai-protocol = { path = "../rushai-protocol", version = "0.1.0" }
+rushai-provider = { path = "../rushai-provider", version = "0.1.0" }
+schemars = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "time"] }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
