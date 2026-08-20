@@ -7,10 +7,13 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+keywords = ["ai", "agent", "llm"]
+categories = ["development-tools"]
+
 [dependencies]
 rusqlite = { workspace = true }
 rusqlite_migration = { workspace = true }
-rushai-protocol = { path = "../rushai-protocol" }
+rushai-protocol = { path = "../rushai-protocol", version = "0.1.0" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

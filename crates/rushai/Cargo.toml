@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+readme = "../../README.md"
+keywords = ["ai", "agent", "cli", "tui", "llm"]
+categories = ["command-line-utilities", "development-tools"]
+
 [[bin]]
 name = "rush"
 path = "src/main.rs"
@@ -15,8 +19,8 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 jiff = { workspace = true }
-rushai-config = { path = "../rushai-config" }
-rushai-core = { path = "../rushai-core" }
+rushai-config = { path = "../rushai-config", version = "0.1.0" }
+rushai-core = { path = "../rushai-core", version = "0.1.0" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
@@ -24,5 +28,5 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
-rushai-protocol = { path = "../rushai-protocol" }
+rushai-protocol = { path = "../rushai-protocol", version = "0.1.0" }
 tempfile = { workspace = true }

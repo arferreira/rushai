@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+keywords = ["ai", "agent", "config"]
+categories = ["development-tools", "config"]
+
 [dependencies]
 dotenvy = { workspace = true }
 schemars = { workspace = true }
