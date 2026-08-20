@@ -13,6 +13,7 @@ fn model() -> ModelInfo {
         id: "claude-opus-5".into(),
         context_window: 200_000,
         max_output: 8192,
+        cost: None,
     }
 }
 
@@ -220,6 +221,7 @@ async fn live_stream_smoke() {
             id: "claude-haiku-4-5-20251001".into(),
             context_window: 200_000,
             max_output: 1024,
+            cost: None,
         },
     );
     let stream = provider

@@ -20,8 +20,9 @@ rushai-protocol = { path = "../rushai-protocol", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 wiremock = { workspace = true }

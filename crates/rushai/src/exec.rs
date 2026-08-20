@@ -8,8 +8,8 @@ use rushai_config::Config;
 use rushai_protocol::{Part, Role, TokenUsage};
 use rushai_provider::fake::{FakeProvider, Scripted};
 use rushai_provider::{
-    Anthropic, ChatMessage, ChatRequest, Copilot, ModelInfo, OpenAiCompat, Provider, ProviderEvent,
-    Retrying,
+    Anthropic, ChatMessage, ChatRequest, ClaudeBridge, Copilot, ModelInfo, OpenAiCompat, Provider,
+    ProviderEvent, Retrying, catalog,
 };
 
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5";
@@ -45,8 +45,13 @@ pub async fn run(
             }
             ProviderEvent::Done { .. } => {
                 out.write_all(b"\n")?;
+                let est = provider
+                    .model()
+                    .cost
+                    .map(|cost| format!(", est ${:.4}", cost.estimate(&usage)))
+                    .unwrap_or_default();
                 eprintln!(
-                    "tokens: {} in, {} out, {} cache read, {} cache write",
+                    "tokens: {} in, {} out, {} cache read, {} cache write{est}",
                     usage.input, usage.output, usage.cache_read, usage.cache_write
                 );
             }
@@ -88,7 +93,7 @@ fn build_provider(
                 )?;
             Ok(Box::new(Retrying::new(Anthropic::new(
                 api_key,
-                info(model_id),
+                model_info(provider_id, model_id),
             ))))
         }
         "openai" | "openrouter" => {
@@ -115,9 +120,13 @@ fn build_provider(
                     });
             Ok(Box::new(Retrying::new(OpenAiCompat::new(
                 api_key,
-                info(model_id),
+                model_info(provider_id, model_id),
                 base_url,
             ))))
+        }
+        "claude" => {
+            let model = info(model_id);
+            Ok(Box::new(ClaudeBridge::discover(model)?))
         }
         "copilot" => {
             let store = AuthStore::new(crate::paths::data_dir()?.join("auth.json"));
@@ -127,7 +136,7 @@ fn build_provider(
                 .context("copilot is not signed in: run rush login copilot")?;
             Ok(Box::new(Retrying::new(Copilot::new(
                 entry.github_token,
-                info(model_id),
+                model_info(provider_id, model_id),
             ))))
         }
         // Any configured provider with a base_url speaks the compat protocol.
@@ -137,7 +146,7 @@ fn build_provider(
                 let base_url = entry.base_url.clone().unwrap();
                 Ok(Box::new(Retrying::new(OpenAiCompat::new(
                     api_key,
-                    info(model_id),
+                    model_info(provider_id, model_id),
                     base_url,
                 ))))
             }
@@ -149,10 +158,15 @@ fn build_provider(
     }
 }
 
+fn model_info(provider_id: &str, model_id: &str) -> ModelInfo {
+    catalog::lookup(provider_id, model_id).unwrap_or_else(|| info(model_id))
+}
+
 fn info(model_id: &str) -> ModelInfo {
     ModelInfo {
         id: model_id.into(),
         context_window: 200_000,
         max_output: 8192,
+        cost: None,
     }
 }

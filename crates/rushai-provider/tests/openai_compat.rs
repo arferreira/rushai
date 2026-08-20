@@ -13,6 +13,7 @@ fn model() -> ModelInfo {
         id: "gpt-5.2".into(),
         context_window: 400_000,
         max_output: 32_000,
+        cost: None,
     }
 }
 
@@ -189,6 +190,7 @@ async fn live_stream_smoke() {
             id: "gpt-5-mini".into(),
             context_window: 400_000,
             max_output: 1024,
+            cost: None,
         },
         "https://api.openai.com/v1".into(),
     );
