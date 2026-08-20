@@ -17,10 +17,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+futures = { workspace = true }
 clap = { workspace = true }
 jiff = { workspace = true }
 rushai-config = { path = "../rushai-config", version = "0.1.0" }
 rushai-core = { path = "../rushai-core", version = "0.1.0" }
+rushai-protocol = { path = "../rushai-protocol", version = "0.1.0" }
+rushai-provider = { path = "../rushai-provider", version = "0.1.0" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
@@ -28,5 +31,6 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+predicates = { workspace = true }
 rushai-protocol = { path = "../rushai-protocol", version = "0.1.0" }
 tempfile = { workspace = true }

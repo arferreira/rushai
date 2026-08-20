@@ -1,3 +1,4 @@
+mod exec;
 mod paths;
 
 use anyhow::Context;
@@ -27,6 +28,17 @@ enum Command {
     },
     /// List sessions, most recently updated first
     Sessions,
+    /// Run a prompt headlessly and stream the answer to stdout
+    Exec {
+        #[arg(short, long)]
+        prompt: String,
+        /// Override the model, as provider/model-id
+        #[arg(long)]
+        model: Option<String>,
+        /// Replay a scripted provider from a JSON file instead of calling an API
+        #[arg(long, value_name = "FILE", hide = true)]
+        fake_provider: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -56,6 +68,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Sessions => list_sessions().await,
+        Command::Exec {
+            prompt,
+            model,
+            fake_provider,
+        } => exec::run(prompt, model, fake_provider.as_deref()).await,
     }
 }
 
