@@ -43,7 +43,7 @@ impl Tool for Grep {
         }
     }
 
-    fn permission(&self, _input: &Value) -> Option<PermissionSpec> {
+    fn permission(&self, _ctx: &ToolCtx, _input: &Value) -> Option<PermissionSpec> {
         None
     }
 

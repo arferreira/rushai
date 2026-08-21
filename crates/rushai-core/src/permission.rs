@@ -19,6 +19,29 @@ pub struct PermissionSpec {
     pub action: String,
     pub path: Option<String>,
     pub description: String,
+    /// Whether an "always" decision may be persisted across sessions. Bash
+    /// sets this false: persisting "always run this command string" is its own
+    /// footgun, so an always here only lasts the session until per-command
+    /// persistent grants are designed.
+    pub persistable: bool,
+}
+
+impl PermissionSpec {
+    /// A persistable spec. Bash builds its own with `persistable: false`.
+    pub fn new(
+        tool: impl Into<String>,
+        action: impl Into<String>,
+        path: Option<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool: tool.into(),
+            action: action.into(),
+            path,
+            description: description.into(),
+            persistable: true,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -191,10 +214,16 @@ impl PermissionService {
                 self.inner.lock().unwrap().session_grants.insert(key);
                 Ok(())
             }
-            Decision::Always => {
+            Decision::Always if spec.persistable => {
                 self.store
                     .save_grant(spec.tool.clone(), spec.action.clone(), spec.path.clone())
                     .await?;
+                Ok(())
+            }
+            // Non-persistable specs (bash) downgrade an always to a session
+            // grant rather than writing a command string to disk.
+            Decision::Always => {
+                self.inner.lock().unwrap().session_grants.insert(key);
                 Ok(())
             }
             Decision::Deny => Err(PermissionError::Denied(spec.description.clone())),

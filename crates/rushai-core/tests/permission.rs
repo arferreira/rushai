@@ -5,12 +5,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::error::TryRecvError;
 
 fn spec() -> PermissionSpec {
-    PermissionSpec {
-        tool: "bash".into(),
-        action: "execute".into(),
-        path: None,
-        description: "run `ls`".into(),
-    }
+    PermissionSpec::new("bash", "execute", None, "run `ls`")
 }
 
 /// Drive one ensure() while answering its request with `decision`.
