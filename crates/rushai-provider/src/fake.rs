@@ -1,27 +1,41 @@
 //! A scripted provider for tests and offline runs.
 
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
 use async_stream::stream;
 
 use crate::{
     ChatRequest, EventStream, ModelInfo, Provider, ProviderError, ProviderEvent, StopReason,
 };
 
-/// Replays a fixed event script. `Fault` entries become stream errors,
-/// letting tests inject failures at arbitrary positions.
+/// One scripted stream entry. `Fault` becomes a stream error, `Hang` never
+/// resolves (for cancellation tests), `Panic` unwinds the run task (to test
+/// that a panicking run still reports completion and never wedges its session).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Scripted {
     Event(ProviderEvent),
     Fault { message: String },
+    Hang,
+    Panic,
 }
 
+/// Replays scripts turn by turn: each `stream()` call plays the next script,
+/// and the last one repeats once exhausted.
 pub struct FakeProvider {
     model: ModelInfo,
-    script: Vec<Scripted>,
+    turns: Mutex<VecDeque<Vec<Scripted>>>,
+    last: Vec<Scripted>,
 }
 
 impl FakeProvider {
     pub fn new(script: Vec<Scripted>) -> Self {
+        Self::turns(vec![script])
+    }
+
+    pub fn turns(scripts: Vec<Vec<Scripted>>) -> Self {
+        let last = scripts.last().cloned().unwrap_or_default();
         Self {
             model: ModelInfo {
                 id: "fake".into(),
@@ -29,7 +43,8 @@ impl FakeProvider {
                 max_output: 8192,
                 cost: None,
             },
-            script,
+            turns: Mutex::new(scripts.into_iter().collect()),
+            last,
         }
     }
 
@@ -55,7 +70,12 @@ impl Provider for FakeProvider {
     }
 
     async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let script = self.script.clone();
+        let script = self
+            .turns
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| self.last.clone());
         Ok(Box::pin(stream! {
             for entry in script {
                 match entry {
@@ -64,6 +84,8 @@ impl Provider for FakeProvider {
                         yield Err(ProviderError::Stream(message));
                         return;
                     }
+                    Scripted::Hang => std::future::pending::<()>().await,
+                    Scripted::Panic => panic!("scripted panic from FakeProvider"),
                 }
             }
         }))

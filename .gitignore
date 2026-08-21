@@ -1,2 +1,4 @@
 /target
 .env
+/.claude/worktrees/
+/.claude/scheduled_tasks.lock
