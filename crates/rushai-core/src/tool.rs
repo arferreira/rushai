@@ -40,14 +40,15 @@ pub struct RunToken(pub(crate) ());
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn def(&self) -> ToolDef;
-    /// None means the tool needs no grant (read-only tools).
-    fn permission(&self, input: &Value) -> Option<PermissionSpec>;
+    /// None means the tool needs no grant (read-only tools). Takes the context
+    /// so specs can resolve paths and describe the real target the user sees.
+    fn permission(&self, ctx: &ToolCtx, input: &Value) -> Option<PermissionSpec>;
     async fn run(&self, ctx: &ToolCtx, input: Value, run: RunToken) -> Result<String, ToolError>;
 }
 
 /// The only path from a tool call to execution: permission gate, then run.
 pub async fn dispatch(tool: &dyn Tool, ctx: &ToolCtx, input: Value) -> Result<String, ToolError> {
-    if let Some(mut spec) = tool.permission(&input) {
+    if let Some(mut spec) = tool.permission(ctx, &input) {
         if let Some(path) = spec.path.take() {
             // Grant keys are absolute so a grant in one project can never
             // apply to a same-named relative path in another.

@@ -28,13 +28,13 @@ impl Tool for Gated {
         }
     }
 
-    fn permission(&self, _input: &Value) -> Option<PermissionSpec> {
-        Some(PermissionSpec {
-            tool: "danger".into(),
-            action: "write".into(),
-            path: Some("victim.txt".into()),
-            description: "write victim.txt".into(),
-        })
+    fn permission(&self, _ctx: &ToolCtx, _input: &Value) -> Option<PermissionSpec> {
+        Some(PermissionSpec::new(
+            "danger",
+            "write",
+            Some("victim.txt".into()),
+            "write victim.txt",
+        ))
     }
 
     async fn run(

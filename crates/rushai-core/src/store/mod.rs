@@ -19,6 +19,8 @@ pub enum StoreError {
     Parts(#[from] serde_json::Error),
     #[error("invalid role {0:?} stored in database")]
     InvalidRole(String),
+    #[error("unknown session {0}")]
+    UnknownSession(String),
     #[error("store thread is gone")]
     Closed,
     #[error("failed to start store thread: {0}")]
@@ -36,6 +38,13 @@ pub struct Session {
     pub completion_tokens: u64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Todo {
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,6 +222,42 @@ impl Store {
                     |row| row.get(0),
                 )?;
                 Ok(count > 0)
+            })
+            .await
+    }
+
+    pub async fn set_todos(&self, session: &SessionId, todos: &[Todo]) -> Result<(), StoreError> {
+        let session = session.clone();
+        let json = serde_json::to_string(todos)?;
+        self.db
+            .call(move |conn| {
+                let rows = conn.execute(
+                    "UPDATE sessions SET todos = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![json, now_ms(), session.as_str()],
+                )?;
+                if rows == 0 {
+                    return Err(StoreError::UnknownSession(session.to_string()));
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn todos(&self, session: &SessionId) -> Result<Vec<Todo>, StoreError> {
+        let session = session.clone();
+        self.db
+            .call(move |conn| {
+                let raw: Option<Option<String>> = conn
+                    .query_row(
+                        "SELECT todos FROM sessions WHERE id = ?1",
+                        params![session.as_str()],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()?;
+                match raw.flatten() {
+                    Some(json) => Ok(serde_json::from_str(&json)?),
+                    None => Ok(Vec::new()),
+                }
             })
             .await
     }
