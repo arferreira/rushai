@@ -25,13 +25,23 @@ pub async fn run(
     fake_script: Option<&Path>,
     yolo: bool,
 ) -> anyhow::Result<()> {
-    let provider: Arc<dyn Provider> = Arc::from(build_provider(model, fake_script)?);
+    let Built {
+        provider,
+        chat_only,
+    } = build_provider(model, fake_script)?;
+    let provider: Arc<dyn Provider> = Arc::from(provider);
     let dir = crate::paths::data_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let store = Store::open(dir.join("rushai.db"))?;
     let title: String = prompt.chars().take(60).collect();
     let session = store.create_session(title, None).await?;
-    let tools = registry(store.clone());
+    // The claude bridge relays to an already-agentic CLI, so rush does not
+    // drive tools through it.
+    let tools = if chat_only {
+        Vec::new()
+    } else {
+        registry(store.clone())
+    };
 
     let (engine, mut events) = Engine::spawn(EngineConfig {
         store,
@@ -126,10 +136,12 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
 }
 
-fn build_provider(
-    model: Option<String>,
-    fake_script: Option<&Path>,
-) -> anyhow::Result<Box<dyn Provider>> {
+struct Built {
+    provider: Box<dyn Provider>,
+    chat_only: bool,
+}
+
+fn build_provider(model: Option<String>, fake_script: Option<&Path>) -> anyhow::Result<Built> {
     if let Some(path) = fake_script {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -137,7 +149,10 @@ fn build_provider(
             Ok(turns) => FakeProvider::turns(turns),
             Err(_) => FakeProvider::new(serde_json::from_str(&text)?),
         };
-        return Ok(Box::new(fake));
+        return Ok(Built {
+            provider: Box::new(fake),
+            chat_only: false,
+        });
     }
 
     let cwd = std::env::current_dir()?;
@@ -159,10 +174,13 @@ fn build_provider(
                 .context(
                     "no anthropic api key: set providers.anthropic.api_key or ANTHROPIC_API_KEY",
                 )?;
-            Ok(Box::new(Retrying::new(Anthropic::new(
-                api_key,
-                model_info(provider_id, model_id),
-            ))))
+            Ok(Built {
+                provider: Box::new(Retrying::new(Anthropic::new(
+                    api_key,
+                    model_info(provider_id, model_id),
+                ))),
+                chat_only: false,
+            })
         }
         "openai" | "openrouter" => {
             let env_key = if provider_id == "openai" {
@@ -186,15 +204,21 @@ fn build_provider(
                         "openai" => "https://api.openai.com/v1".into(),
                         _ => "https://openrouter.ai/api/v1".into(),
                     });
-            Ok(Box::new(Retrying::new(OpenAiCompat::new(
-                api_key,
-                model_info(provider_id, model_id),
-                base_url,
-            ))))
+            Ok(Built {
+                provider: Box::new(Retrying::new(OpenAiCompat::new(
+                    api_key,
+                    model_info(provider_id, model_id),
+                    base_url,
+                ))),
+                chat_only: false,
+            })
         }
         "claude" => {
             let model = model_info(provider_id, model_id);
-            Ok(Box::new(ClaudeBridge::discover(model)))
+            Ok(Built {
+                provider: Box::new(ClaudeBridge::discover(model)),
+                chat_only: true,
+            })
         }
         "copilot" => {
             let store = AuthStore::new(crate::paths::data_dir()?.join("auth.json"));
@@ -202,21 +226,27 @@ fn build_provider(
                 .load()?
                 .copilot
                 .context("copilot is not signed in: run rush login copilot")?;
-            Ok(Box::new(Retrying::new(Copilot::new(
-                entry.github_token,
-                model_info(provider_id, model_id),
-            ))))
+            Ok(Built {
+                provider: Box::new(Retrying::new(Copilot::new(
+                    entry.github_token,
+                    model_info(provider_id, model_id),
+                ))),
+                chat_only: false,
+            })
         }
         // Any configured provider with a base_url speaks the compat protocol.
         other => match config.providers.get(other) {
             Some(entry) if entry.base_url.is_some() => {
                 let api_key = entry.api_key.clone().unwrap_or_default();
                 let base_url = entry.base_url.clone().unwrap();
-                Ok(Box::new(Retrying::new(OpenAiCompat::new(
-                    api_key,
-                    model_info(provider_id, model_id),
-                    base_url,
-                ))))
+                Ok(Built {
+                    provider: Box::new(Retrying::new(OpenAiCompat::new(
+                        api_key,
+                        model_info(provider_id, model_id),
+                        base_url,
+                    ))),
+                    chat_only: false,
+                })
             }
             _ => bail!(
                 "unknown provider {other:?} (built in: anthropic, openai, openrouter; \
