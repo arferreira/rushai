@@ -25,7 +25,7 @@ impl Tool for Echo {
             input_schema: json!({ "type": "object" }),
         }
     }
-    fn permission(&self, _input: &Value) -> Option<PermissionSpec> {
+    fn permission(&self, _ctx: &ToolCtx, _input: &Value) -> Option<PermissionSpec> {
         None
     }
     async fn run(&self, _ctx: &ToolCtx, input: Value, _run: RunToken) -> Result<String, ToolError> {
@@ -52,12 +52,13 @@ impl Tool for Gated {
             input_schema: json!({ "type": "object" }),
         }
     }
-    fn permission(&self, _input: &Value) -> Option<PermissionSpec> {
+    fn permission(&self, _ctx: &ToolCtx, _input: &Value) -> Option<PermissionSpec> {
         Some(PermissionSpec {
             tool: "gated".into(),
             action: "poke".into(),
             path: None,
             description: "poke the thing".into(),
+            persistable: true,
         })
     }
     async fn run(
@@ -423,4 +424,127 @@ async fn provider_fault_yields_exactly_one_run_finished() {
         events.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
+}
+
+/// Every tool_use part in history must be followed by a tool_result, or a
+/// strict provider (Anthropic) rejects the whole request on the next turn.
+fn assert_history_tool_calls_are_paired(messages: &[rushai_core::store::StoredMessage]) {
+    use std::collections::HashSet;
+    let mut open: HashSet<String> = HashSet::new();
+    for message in messages {
+        for part in &message.parts {
+            match part {
+                Part::ToolCall { id, .. } => {
+                    open.insert(id.to_string());
+                }
+                Part::ToolResult { id, .. } => {
+                    open.remove(&id.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        open.is_empty(),
+        "unpaired tool_use in history: {open:?}; a real provider would 400"
+    );
+}
+
+#[tokio::test]
+async fn cancel_mid_tool_call_leaves_no_unpaired_tool_use() {
+    // The model starts streaming a tool call, then the stream hangs and the
+    // user cancels. execute_tools never runs, so the tool_use must not survive
+    // into history unpaired.
+    let provider = FakeProvider::new(vec![
+        Scripted::Event(ProviderEvent::ToolCallStart {
+            id: "c1".into(),
+            name: "echo".into(),
+        }),
+        Scripted::Event(ProviderEvent::ToolCallDelta {
+            id: "c1".into(),
+            json: r#"{"msg":"hi"#.into(),
+        }),
+        Scripted::Hang,
+    ]);
+    let (engine, mut events, store, session) = engine(provider, vec![Arc::new(Echo)]).await;
+    prompt(&engine, &session, "call echo then cancel");
+
+    // The tool-arg JSON streams as a PartDelta; cancel once it is mid-flight.
+    wait_for(&mut events, |e| {
+        matches!(
+            e,
+            Event::PartDelta {
+                delta: rushai_protocol::PartDelta::ToolInput { .. },
+                ..
+            }
+        )
+    })
+    .await;
+    engine.submit(Op::Cancel {
+        session: session.clone(),
+    });
+    let run = collect_run(&mut events).await;
+    assert_eq!(finish_reason(&run), FinishReason::Canceled);
+
+    let messages = store.messages(&session).await.unwrap();
+    assert_history_tool_calls_are_paired(&messages);
+    // The dropped call leaves a coherent assistant message ending in Finish.
+    assert!(matches!(
+        messages.last().unwrap().parts.last(),
+        Some(Part::Finish {
+            reason: FinishReason::Canceled,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn provider_fault_mid_tool_call_leaves_no_unpaired_tool_use() {
+    let provider = FakeProvider::new(vec![
+        Scripted::Event(ProviderEvent::ToolCallStart {
+            id: "c1".into(),
+            name: "echo".into(),
+        }),
+        Scripted::Fault {
+            message: "reset mid tool".into(),
+        },
+    ]);
+    let (engine, mut events, store, session) = engine(provider, vec![Arc::new(Echo)]).await;
+    prompt(&engine, &session, "call echo, fault");
+
+    let run = collect_run(&mut events).await;
+    assert_eq!(finish_reason(&run), FinishReason::Error);
+    assert_history_tool_calls_are_paired(&store.messages(&session).await.unwrap());
+}
+
+#[tokio::test]
+async fn panicking_run_reports_finish_and_the_session_survives() {
+    // catch_unwind around the run task is the only thing keeping a panic from
+    // wedging the session. Prove one RunFinished still arrives and a follow-up
+    // prompt on the same session runs normally.
+    let provider = FakeProvider::turns(vec![
+        vec![
+            Scripted::Event(ProviderEvent::TextDelta("about to".into())),
+            Scripted::Panic,
+        ],
+        text_turn("recovered"),
+    ]);
+    let (engine, mut events, store, session) = engine(provider, vec![]).await;
+    prompt(&engine, &session, "boom");
+
+    let run = collect_run(&mut events).await;
+    assert_eq!(finish_reason(&run), FinishReason::Error);
+    assert_eq!(
+        run.iter()
+            .filter(|e| matches!(e, Event::RunFinished { .. }))
+            .count(),
+        1
+    );
+
+    // The session is not wedged: the next prompt runs to completion.
+    prompt(&engine, &session, "still there?");
+    let run = collect_run(&mut events).await;
+    assert_eq!(finish_reason(&run), FinishReason::EndTurn);
+    assert!(run.iter().any(|e| matches!(e, Event::PartDelta { .. })));
+    let _ = store;
 }

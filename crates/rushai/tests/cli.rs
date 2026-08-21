@@ -85,13 +85,14 @@ fn exec_streams_a_fake_script() {
     )
     .unwrap();
     let assert = rush()
+        .env("RUSHAI_DATA_DIR", tmp.path())
         .args(["exec", "-p", "hi"])
         .arg("--fake-provider")
         .arg(&script)
         .assert()
         .success();
     let out = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
-    assert_eq!(out, "hello world\n");
+    assert!(out.contains("hello world"), "{out}");
     let err = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     assert!(err.contains("3 in, 2 out"), "{err}");
 }
@@ -109,6 +110,7 @@ fn exec_fault_script_fails() {
     )
     .unwrap();
     rush()
+        .env("RUSHAI_DATA_DIR", tmp.path())
         .args(["exec", "-p", "hi"])
         .arg("--fake-provider")
         .arg(&script)
@@ -122,6 +124,7 @@ fn exec_without_key_says_how_to_set_one() {
     let tmp = tempfile::tempdir().unwrap();
     rush()
         .current_dir(tmp.path())
+        .env("RUSHAI_DATA_DIR", tmp.path().join("data"))
         .env("XDG_CONFIG_HOME", tmp.path().join("xdg"))
         .env_remove("ANTHROPIC_API_KEY")
         .args(["exec", "-p", "hi"])

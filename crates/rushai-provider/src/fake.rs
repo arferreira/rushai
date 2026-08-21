@@ -10,13 +10,15 @@ use crate::{
 };
 
 /// One scripted stream entry. `Fault` becomes a stream error, `Hang` never
-/// resolves (for cancellation tests).
+/// resolves (for cancellation tests), `Panic` unwinds the run task (to test
+/// that a panicking run still reports completion and never wedges its session).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Scripted {
     Event(ProviderEvent),
     Fault { message: String },
     Hang,
+    Panic,
 }
 
 /// Replays scripts turn by turn: each `stream()` call plays the next script,
@@ -83,6 +85,7 @@ impl Provider for FakeProvider {
                         return;
                     }
                     Scripted::Hang => std::future::pending::<()>().await,
+                    Scripted::Panic => panic!("scripted panic from FakeProvider"),
                 }
             }
         }))

@@ -340,8 +340,6 @@ async fn stream_turn(
     }
 }
 
-/// Close the streaming part: parse buffered tool input, emit PartDone,
-/// persist the message so far.
 async fn close_open(
     ctx: &RunCtx,
     msg: &mut StoredMessage,
@@ -382,7 +380,13 @@ async fn finalize(
     reason: FinishReason,
     usage: TokenUsage,
 ) -> Result<(), RunError> {
-    if let Some(Part::ToolCall { input, .. }) = msg.parts.last_mut()
+    // A turn that ended in cancel or error never runs its tools, so any
+    // tool_use parts would replay unpaired and a strict provider rejects the
+    // whole history. Drop them; the calls did not happen.
+    if matches!(reason, FinishReason::Canceled | FinishReason::Error) {
+        msg.parts
+            .retain(|part| !matches!(part, Part::ToolCall { .. }));
+    } else if let Some(Part::ToolCall { input, .. }) = msg.parts.last_mut()
         && input.is_null()
     {
         *input = Value::Object(serde_json::Map::new());

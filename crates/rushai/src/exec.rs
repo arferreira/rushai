@@ -7,8 +7,7 @@ use rushai_config::AuthStore;
 use rushai_config::Config;
 use rushai_core::agent::{Engine, EngineConfig};
 use rushai_core::store::Store;
-use rushai_core::tool::Tool;
-use rushai_core::tools::{GlobTool, Grep, Ls, View};
+use rushai_core::tools::registry;
 use rushai_protocol::{Decision, Event, Op, PartDelta, TokenUsage, UserPart};
 use rushai_provider::fake::{FakeProvider, Scripted};
 use rushai_provider::{
@@ -32,12 +31,7 @@ pub async fn run(
     let store = Store::open(dir.join("rushai.db"))?;
     let title: String = prompt.chars().take(60).collect();
     let session = store.create_session(title, None).await?;
-    let tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(View),
-        Arc::new(Ls),
-        Arc::new(GlobTool),
-        Arc::new(Grep),
-    ];
+    let tools = registry(store.clone());
 
     let (engine, mut events) = Engine::spawn(EngineConfig {
         store,
