@@ -41,6 +41,9 @@ enum Command {
         /// Replay a scripted provider from a JSON file instead of calling an API
         #[arg(long, value_name = "FILE", hide = true)]
         fake_provider: Option<std::path::PathBuf>,
+        /// Skip all permission prompts and let tools run
+        #[arg(long)]
+        yolo: bool,
     },
 }
 
@@ -76,7 +79,8 @@ async fn main() -> anyhow::Result<()> {
             prompt,
             model,
             fake_provider,
-        } => exec::run(prompt, model, fake_provider.as_deref()).await,
+            yolo,
+        } => exec::run(prompt, model, fake_provider.as_deref(), yolo).await,
     }
 }
 

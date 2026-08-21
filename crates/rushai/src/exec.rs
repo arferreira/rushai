@@ -1,15 +1,18 @@
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
-use futures::StreamExt;
 use rushai_config::AuthStore;
 use rushai_config::Config;
-use rushai_protocol::{Part, Role, TokenUsage};
+use rushai_core::agent::{Engine, EngineConfig};
+use rushai_core::store::Store;
+use rushai_core::tool::Tool;
+use rushai_core::tools::{GlobTool, Grep, Ls, View};
+use rushai_protocol::{Decision, Event, Op, PartDelta, TokenUsage, UserPart};
 use rushai_provider::fake::{FakeProvider, Scripted};
 use rushai_provider::{
-    Anthropic, ChatMessage, ChatRequest, ClaudeBridge, Copilot, ModelInfo, OpenAiCompat, Provider,
-    ProviderEvent, Retrying, catalog,
+    Anthropic, ClaudeBridge, Copilot, ModelInfo, OpenAiCompat, Provider, Retrying, catalog,
 };
 
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5";
@@ -21,33 +24,77 @@ pub async fn run(
     prompt: String,
     model: Option<String>,
     fake_script: Option<&Path>,
+    yolo: bool,
 ) -> anyhow::Result<()> {
-    let provider = build_provider(model, fake_script)?;
-    let request = ChatRequest {
-        messages: vec![ChatMessage {
-            role: Role::User,
-            parts: vec![Part::Text { text: prompt }],
-        }],
-        max_tokens: Some(DEFAULT_MAX_TOKENS),
-        ..Default::default()
-    };
+    let provider: Arc<dyn Provider> = Arc::from(build_provider(model, fake_script)?);
+    let dir = crate::paths::data_dir()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let store = Store::open(dir.join("rushai.db"))?;
+    let title: String = prompt.chars().take(60).collect();
+    let session = store.create_session(title, None).await?;
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(View),
+        Arc::new(Ls),
+        Arc::new(GlobTool),
+        Arc::new(Grep),
+    ];
 
-    let mut stream = provider.stream(&request).await?;
+    let (engine, mut events) = Engine::spawn(EngineConfig {
+        store,
+        provider: provider.clone(),
+        tools,
+        cwd: std::env::current_dir()?,
+        yolo,
+        max_tokens: Some(DEFAULT_MAX_TOKENS),
+    });
+    engine.submit(Op::Prompt {
+        session: session.id.clone(),
+        parts: vec![UserPart::Text { text: prompt }],
+    });
+
     let mut usage = TokenUsage::default();
+    let mut failed = false;
     let mut out = std::io::stdout();
-    while let Some(event) = stream.next().await {
-        match event? {
-            ProviderEvent::TextDelta(text) => {
-                out.write_all(text.as_bytes())?;
+    while let Some(event) = events.recv().await {
+        match event {
+            Event::PartDelta {
+                delta: PartDelta::Text { delta },
+                ..
+            } => {
+                out.write_all(delta.as_bytes())?;
                 out.flush()?;
             }
-            ProviderEvent::Usage(u) => {
+            Event::ToolStarted { name, input, .. } => {
+                eprintln!("[tool] {name}: {}", compact(&input));
+            }
+            Event::ToolDone {
+                output, is_error, ..
+            } => {
+                if is_error {
+                    eprintln!("[tool error] {}", first_line(&output));
+                }
+            }
+            Event::PermissionRequested { request } => {
+                eprintln!(
+                    "[denied without asking: {}; rerun with --yolo to allow tools]",
+                    request.description
+                );
+                engine.submit(Op::PermissionDecision {
+                    request: request.id,
+                    decision: Decision::Deny,
+                });
+            }
+            Event::Usage { usage: u, .. } => {
                 usage.input += u.input;
                 usage.output += u.output;
                 usage.cache_read += u.cache_read;
                 usage.cache_write += u.cache_write;
             }
-            ProviderEvent::Done { .. } => {
+            Event::Error { message } => {
+                eprintln!("error: {message}");
+                failed = true;
+            }
+            Event::RunFinished { reason, .. } => {
                 out.write_all(b"\n")?;
                 let est = provider
                     .model()
@@ -58,11 +105,31 @@ pub async fn run(
                     "tokens: {} in, {} out, {} cache read, {} cache write{est}",
                     usage.input, usage.output, usage.cache_read, usage.cache_write
                 );
+                if reason == rushai_protocol::FinishReason::Error {
+                    failed = true;
+                }
+                break;
             }
             _ => {}
         }
     }
+    if failed {
+        bail!("run failed");
+    }
     Ok(())
+}
+
+fn compact(input: &serde_json::Value) -> String {
+    let text = input.to_string();
+    if text.len() > 120 {
+        format!("{}...", &text[..text.floor_char_boundary(120)])
+    } else {
+        text
+    }
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or_default()
 }
 
 fn build_provider(
@@ -72,8 +139,11 @@ fn build_provider(
     if let Some(path) = fake_script {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let script: Vec<Scripted> = serde_json::from_str(&text)?;
-        return Ok(Box::new(FakeProvider::new(script)));
+        let fake = match serde_json::from_str::<Vec<Vec<Scripted>>>(&text) {
+            Ok(turns) => FakeProvider::turns(turns),
+            Err(_) => FakeProvider::new(serde_json::from_str(&text)?),
+        };
+        return Ok(Box::new(fake));
     }
 
     let cwd = std::env::current_dir()?;

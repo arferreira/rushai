@@ -11,6 +11,7 @@ keywords = ["ai", "agent", "llm"]
 categories = ["development-tools"]
 
 [dependencies]
+futures = { workspace = true }
 async-trait = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }

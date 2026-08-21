@@ -1585,6 +1585,7 @@ name = "rushai-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "glob",
  "libc",
  "regex",
