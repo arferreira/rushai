@@ -35,7 +35,7 @@ async fn device_flow_handles_pending_and_slow_down() {
             "user_code": "ABCD-1234",
             "verification_uri": "https://github.com/login/device",
             "interval": 1,
-            "expires_in": 900,
+            "expires_in": 10000000,
         })))
         .mount(&server)
         .await;
